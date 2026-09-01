@@ -127,10 +127,6 @@ def handle_command(text):
     if command != "/yt":
         return
 
-    # ---------------------------------------------------------
-    # /yt
-    # ---------------------------------------------------------
-
     if len(parts) == 1:
         send_message(
             "📺 YouTube monitoring\n\n"
@@ -146,10 +142,6 @@ def handle_command(text):
     config, sha = load_config_from_github()
 
     keywords = get_keywords(config)
-
-    # ---------------------------------------------------------
-    # /yt seznam
-    # ---------------------------------------------------------
 
     if action == "seznam":
 
@@ -170,10 +162,6 @@ def handle_command(text):
 
         send_message(message)
         return
-
-    # ---------------------------------------------------------
-    # /yt pridej JMENO
-    # ---------------------------------------------------------
 
     if action == "pridej":
 
@@ -209,10 +197,6 @@ def handle_command(text):
 
         return
 
-    # ---------------------------------------------------------
-    # /yt odeber JMENO
-    # ---------------------------------------------------------
-
     if action == "odeber":
 
         if len(parts) < 3:
@@ -234,8 +218,6 @@ def handle_command(text):
 
         config["keywords"] = keywords
 
-        # Odstraníme případné výjimky
-        # spojené s tímto klíčovým slovem.
         exclude_channels = config.get(
             "exclude_channels",
             {}
@@ -259,10 +241,6 @@ def handle_command(text):
 
         return
 
-    # ---------------------------------------------------------
-    # Neznámý příkaz
-    # ---------------------------------------------------------
-
     send_message(
         "❓ Neznámý YouTube příkaz.\n\n"
         "Použij:\n"
@@ -274,72 +252,96 @@ def handle_command(text):
 
 def main():
 
-    print("YouTube Telegram bot spuštěn.")
+    print("YouTube Telegram bot - jednorázová kontrola.")
 
-    offset = None
+    data = {
+        "timeout": 0,
+        "allowed_updates": json.dumps(
+            ["message"]
+        ),
+    }
 
-    while True:
+    updates = telegram_request(
+        "getUpdates",
+        data,
+    )
 
-        data = {
-            "timeout": 50,
-            "allowed_updates": json.dumps(
-                ["message"]
-            ),
-        }
+    updates_list = updates.get(
+        "result",
+        []
+    )
 
-        if offset is not None:
-            data["offset"] = offset
+    print(
+        f"Nalezeno nových Telegram zpráv: "
+        f"{len(updates_list)}"
+    )
 
-        updates = telegram_request(
-            "getUpdates",
-            data,
+    last_update_id = None
+
+    for update in updates_list:
+
+        update_id = update["update_id"]
+
+        if (
+            last_update_id is None
+            or update_id > last_update_id
+        ):
+            last_update_id = update_id
+
+        message = update.get(
+            "message"
         )
 
-        for update in updates.get(
-            "result",
-            []
+        if not message:
+            continue
+
+        chat_id = str(
+            message["chat"]["id"]
+        )
+
+        if chat_id != str(
+            TELEGRAM_CHAT_ID
         ):
+            continue
 
-            offset = update["update_id"] + 1
+        text = message.get(
+            "text",
+            ""
+        )
 
-            message = update.get(
-                "message"
+        if not text.startswith("/yt"):
+            continue
+
+        try:
+
+            handle_command(text)
+
+        except Exception as e:
+
+            print(
+                f"Chyba při zpracování příkazu: {e}"
             )
 
-            if not message:
-                continue
-
-            chat_id = str(
-                message["chat"]["id"]
+            send_message(
+                "❌ Nastala chyba při "
+                "zpracování příkazu."
             )
 
-            # Bezpečnost:
-            # reagujeme pouze na tvůj Telegram chat.
-            if chat_id != str(
-                TELEGRAM_CHAT_ID
-            ):
-                continue
+    # Potvrdíme Telegramu zpracování všech nalezených update.
+    if last_update_id is not None:
 
-            text = message.get(
-                "text",
-                ""
-            )
+        telegram_request(
+            "getUpdates",
+            {
+                "offset": last_update_id + 1,
+                "timeout": 0,
+                "allowed_updates": json.dumps(
+                    ["message"]
+                ),
+            },
+        )
 
-            if text.startswith("/yt"):
-
-                try:
-                    handle_command(text)
-
-                except Exception as e:
-
-                    print(
-                        f"Chyba: {e}"
-                    )
-
-                    send_message(
-                        "❌ Nastala chyba při "
-                        "zpracování příkazu."
-                    )
+    print("Telegram kontrola dokončena.")
 
 
 if __name__ == "__main__":
