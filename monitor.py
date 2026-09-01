@@ -1,109 +1,68 @@
-import json
 import os
+import json
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 
+YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-CHANNEL_ID = os.environ["YOUTUBE_CHANNEL_ID"]
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+KEYWORD = "Michopulos"
 
-RSS_URL = (
-    f"https://www.youtube.com/feeds/videos.xml?"
-    f"channel_id={CHANNEL_ID}"
+# 1. Vyhledání nejnovějšího videa na YouTube
+params = {
+    "part": "snippet",
+    "q": KEYWORD,
+    "type": "video",
+    "maxResults": 1,
+    "order": "date",
+    "key": YOUTUBE_API_KEY,
+}
+
+url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
+
+with urllib.request.urlopen(url) as response:
+    data = json.load(response)
+
+items = data.get("items", [])
+
+if not items:
+    print(f"Nenalezeno žádné video pro: {KEYWORD}")
+    raise SystemExit(0)
+
+video = items[0]
+video_id = video["id"]["videoId"]
+title = video["snippet"]["title"]
+published = video["snippet"]["publishedAt"]
+video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+print("Nalezeno:")
+print(title)
+print(video_url)
+
+# 2. Odeslání zprávy do Telegramu
+message = (
+    f"🎬 Nové vyhledávání YouTube\n\n"
+    f"🔎 Hledaný výraz: {KEYWORD}\n"
+    f"📺 {title}\n"
+    f"📅 {published}\n\n"
+    f"🔗 {video_url}"
 )
 
-STATE_FILE = "state.json"
+telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
+telegram_data = urllib.parse.urlencode({
+    "chat_id": TELEGRAM_CHAT_ID,
+    "text": message,
+}).encode("utf-8")
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {"videos": []}
+request = urllib.request.Request(
+    telegram_url,
+    data=telegram_data,
+    method="POST",
+)
 
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+with urllib.request.urlopen(request) as response:
+    result = json.load(response)
 
-
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-
-def get_videos():
-    with urllib.request.urlopen(RSS_URL) as response:
-        xml_data = response.read()
-
-    root = ET.fromstring(xml_data)
-
-    namespace = {
-        "atom": "http://www.w3.org/2005/Atom",
-        "yt": "http://www.youtube.com/xml/schemas/2015",
-    }
-
-    videos = []
-
-    for entry in root.findall("atom:entry", namespace):
-        video_id = entry.find("yt:videoId", namespace).text
-        title = entry.find("atom:title", namespace).text
-
-        videos.append({
-            "id": video_id,
-            "title": title,
-            "url": f"https://www.youtube.com/watch?v={video_id}"
-        })
-
-    return videos
-
-
-def send_telegram(title, url):
-    message = f"🎬 Nové video!\n\n{title}\n\n{url}"
-
-    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
-        "text": message,
-    }).encode()
-
-    request = urllib.request.Request(api_url, data=data)
-
-    with urllib.request.urlopen(request) as response:
-        response.read()
-
-
-def main():
-    state = load_state()
-    known_videos = set(state["videos"])
-
-    videos = get_videos()
-
-    new_videos = [
-        video for video in videos
-        if video["id"] not in known_videos
-    ]
-
-    # První spuštění:
-    # uloží současná videa bez posílání starých upozornění.
-    if not state["videos"]:
-        state["videos"] = [video["id"] for video in videos]
-        save_state(state)
-
-        print("Initial setup completed.")
-        return
-
-    for video in reversed(new_videos):
-        send_telegram(video["title"], video["url"])
-        print(f"Sent: {video['title']}")
-
-    state["videos"] = list(
-        dict.fromkeys(
-            state["videos"] + [video["id"] for video in videos]
-        )
-    )[-50:]
-
-    save_state(state)
-
-
-if __name__ == "__main__":
-    main()
+print("Telegram response:", result)
