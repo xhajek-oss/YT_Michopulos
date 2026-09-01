@@ -1,4 +1,4 @@
-name: YouTube test
+name: YouTube Telegram test
 
 on:
   workflow_dispatch:
@@ -16,7 +16,9 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Search YouTube
-        run: python test_youtube.py
+      - name: Run monitor
+        run: python monitor.py
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
