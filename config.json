@@ -1,5 +1,10 @@
 {
   "keywords": [
     "Michopulos"
-  ]
+  ],
+  "exclude_channels": {
+    "Michopulos": [
+      "UCDlviqJwAFEmcDKTivZIm3g"
+    ]
+  }
 }
