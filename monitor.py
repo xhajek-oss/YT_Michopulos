@@ -2,7 +2,7 @@ import os
 import json
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -11,10 +11,6 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 CONFIG_FILE = "config.json"
 STATE_FILE = "data/seen_videos.json"
-
-# Hledáme videa publikovaná během posledních 48 hodin.
-# Je to rezerva pro případ, že YouTube video zaindexuje se zpožděním.
-LOOKBACK_HOURS = 48
 
 
 def load_config():
@@ -40,14 +36,13 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def search_youtube(keyword, published_after):
+def search_youtube(keyword):
     params = {
         "part": "snippet",
         "q": keyword,
         "type": "video",
         "maxResults": 50,
         "order": "date",
-        "publishedAfter": published_after,
         "key": YOUTUBE_API_KEY,
     }
 
@@ -107,13 +102,8 @@ def main():
 
     now = datetime.now(timezone.utc)
 
-    published_after = now - timedelta(hours=LOOKBACK_HOURS)
-
-    published_after_str = published_after.isoformat().replace("+00:00", "Z")
-
     print(f"Kontrola: {now.isoformat()}")
     print(f"Klíčová slova: {keywords}")
-    print(f"Hledám videa od: {published_after_str}")
     print()
 
     found_new = []
@@ -121,7 +111,7 @@ def main():
     for keyword in keywords:
         print(f"Hledám: {keyword}")
 
-        data = search_youtube(keyword, published_after_str)
+        data = search_youtube(keyword)
         items = data.get("items", [])
 
         print(f"  Výsledků: {len(items)}")
@@ -149,8 +139,8 @@ def main():
     print()
 
     # PRVNÍ SPUŠTĚNÍ
-    # Existující videa pouze uložíme.
-    # Telegram se při prvním spuštění neposílá.
+    # Existující výsledky pouze uložíme.
+    # Telegram se neposílá.
     if not state_exists:
         print("První spuštění – vytvářím základní seznam videí.")
 
@@ -189,7 +179,7 @@ def main():
 
             seen_video_ids.add(video["video_id"])
 
-    # Uchováme posledních 500 ID.
+    # Uložíme posledních 500 ID.
     state["seen_video_ids"] = list(seen_video_ids)[-500:]
     state["last_checked_at"] = now.isoformat()
 
