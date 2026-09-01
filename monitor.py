@@ -87,6 +87,14 @@ def send_telegram(keyword, title, published, video_url):
         raise RuntimeError(f"Telegram chyba: {result}")
 
 
+def get_excluded_channels(config, keyword):
+    exclude_channels = config.get("exclude_channels", {})
+
+    channels = exclude_channels.get(keyword, [])
+
+    return set(channels)
+
+
 def main():
     config = load_config()
     keywords = config.get("keywords", [])
@@ -97,10 +105,12 @@ def main():
 
     state = load_state()
 
-    seen_video_ids = set(state.get("seen_video_ids", []))
+    seen_video_ids = set(
+        state.get("seen_video_ids", [])
+    )
 
     # První spuštění poznáme podle toho,
-    # že zatím nemáme uložené žádné video.
+    # že zatím nemáme uložená žádná videa.
     first_run = len(seen_video_ids) == 0
 
     now = datetime.now(timezone.utc)
@@ -112,7 +122,19 @@ def main():
     found_videos = []
 
     for keyword in keywords:
+
         print(f"Hledám: {keyword}")
+
+        excluded_channels = get_excluded_channels(
+            config,
+            keyword
+        )
+
+        if excluded_channels:
+            print(
+                "  Vyloučené kanály: "
+                + ", ".join(excluded_channels)
+            )
 
         data = search_youtube(keyword)
         items = data.get("items", [])
@@ -120,19 +142,48 @@ def main():
         print(f"  Výsledků: {len(items)}")
 
         for item in items:
+
             video_id = item["id"]["videoId"]
             snippet = item["snippet"]
 
             title = snippet["title"]
             published = snippet["publishedAt"]
 
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            channel_id = snippet.get("channelId", "")
+            channel_title = snippet.get(
+                "channelTitle",
+                "Neznámý kanál"
+            )
+
+            # -------------------------------------------------
+            # VÝJIMKA PODLE ID KANÁLU
+            # -------------------------------------------------
+
+            if channel_id in excluded_channels:
+
+                print(
+                    f"  IGNORUJI: {title}"
+                )
+                print(
+                    f"    Kanál: {channel_title}"
+                )
+                print(
+                    f"    Channel ID: {channel_id}"
+                )
+
+                continue
+
+            video_url = (
+                f"https://www.youtube.com/watch?v={video_id}"
+            )
 
             found_videos.append({
                 "video_id": video_id,
                 "keyword": keyword,
                 "title": title,
                 "published": published,
+                "channel_id": channel_id,
+                "channel_title": channel_title,
                 "video_url": video_url,
             })
 
@@ -143,19 +194,35 @@ def main():
     # ---------------------------------------------------------
 
     if first_run:
-        print("První spuštění – vytvářím základní seznam videí.")
-        print("Telegram zprávy se NEPOSÍLAJÍ.")
+
+        print(
+            "První spuštění – vytvářím základní seznam videí."
+        )
+
+        print(
+            "Telegram zprávy se NEPOSÍLAJÍ."
+        )
 
         for video in found_videos:
-            seen_video_ids.add(video["video_id"])
+            seen_video_ids.add(
+                video["video_id"]
+            )
 
-        state["seen_video_ids"] = list(seen_video_ids)[-500:]
+        state["seen_video_ids"] = list(
+            seen_video_ids
+        )[-500:]
+
         state["last_checked_at"] = now.isoformat()
 
         save_state(state)
 
-        print(f"Zapamatováno videí: {len(found_videos)}")
+        print(
+            f"Zapamatováno videí: "
+            f"{len(found_videos)}"
+        )
+
         print("Výchozí stav uložen.")
+
         return
 
     # ---------------------------------------------------------
@@ -165,20 +232,39 @@ def main():
     new_videos = []
 
     for video in found_videos:
+
         if video["video_id"] not in seen_video_ids:
             new_videos.append(video)
 
     if not new_videos:
+
         print("Žádná nová videa.")
 
     else:
-        print(f"Nalezeno nových videí: {len(new_videos)}")
+
+        print(
+            f"Nalezeno nových videí: "
+            f"{len(new_videos)}"
+        )
 
         for video in new_videos:
 
             print()
-            print(f"NOVÉ: {video['title']}")
-            print(video["video_url"])
+            print(
+                f"NOVÉ: {video['title']}"
+            )
+
+            print(
+                f"Kanál: {video['channel_title']}"
+            )
+
+            print(
+                f"Channel ID: {video['channel_id']}"
+            )
+
+            print(
+                video["video_url"]
+            )
 
             send_telegram(
                 video["keyword"],
@@ -187,13 +273,18 @@ def main():
                 video["video_url"],
             )
 
-            seen_video_ids.add(video["video_id"])
+            seen_video_ids.add(
+                video["video_id"]
+            )
 
     # ---------------------------------------------------------
     # ULOŽENÍ STAVU
     # ---------------------------------------------------------
 
-    state["seen_video_ids"] = list(seen_video_ids)[-500:]
+    state["seen_video_ids"] = list(
+        seen_video_ids
+    )[-500:]
+
     state["last_checked_at"] = now.isoformat()
 
     save_state(state)
