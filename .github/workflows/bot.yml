@@ -3,6 +3,16 @@ name: Telegram Bot
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   bot:
     runs-on: ubuntu-latest
