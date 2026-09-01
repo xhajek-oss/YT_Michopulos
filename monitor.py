@@ -95,10 +95,13 @@ def main():
         print("V config.json nejsou žádná klíčová slova.")
         return
 
-    state_exists = os.path.exists(STATE_FILE)
     state = load_state()
 
     seen_video_ids = set(state.get("seen_video_ids", []))
+
+    # První spuštění poznáme podle toho,
+    # že zatím nemáme uložené žádné video.
+    first_run = len(seen_video_ids) == 0
 
     now = datetime.now(timezone.utc)
 
@@ -106,7 +109,7 @@ def main():
     print(f"Klíčová slova: {keywords}")
     print()
 
-    found_new = []
+    found_videos = []
 
     for keyword in keywords:
         print(f"Hledám: {keyword}")
@@ -125,10 +128,7 @@ def main():
 
             video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-            if video_id in seen_video_ids:
-                continue
-
-            found_new.append({
+            found_videos.append({
                 "video_id": video_id,
                 "keyword": keyword,
                 "title": title,
@@ -138,13 +138,15 @@ def main():
 
     print()
 
+    # ---------------------------------------------------------
     # PRVNÍ SPUŠTĚNÍ
-    # Existující výsledky pouze uložíme.
-    # Telegram se neposílá.
-    if not state_exists:
-        print("První spuštění – vytvářím základní seznam videí.")
+    # ---------------------------------------------------------
 
-        for video in found_new:
+    if first_run:
+        print("První spuštění – vytvářím základní seznam videí.")
+        print("Telegram zprávy se NEPOSÍLAJÍ.")
+
+        for video in found_videos:
             seen_video_ids.add(video["video_id"])
 
         state["seen_video_ids"] = list(seen_video_ids)[-500:]
@@ -152,19 +154,27 @@ def main():
 
         save_state(state)
 
-        print(f"Zapamatováno videí: {len(found_new)}")
-        print("Telegram zpráva nebyla odeslána.")
-
+        print(f"Zapamatováno videí: {len(found_videos)}")
+        print("Výchozí stav uložen.")
         return
 
+    # ---------------------------------------------------------
     # DALŠÍ SPUŠTĚNÍ
-    if not found_new:
+    # ---------------------------------------------------------
+
+    new_videos = []
+
+    for video in found_videos:
+        if video["video_id"] not in seen_video_ids:
+            new_videos.append(video)
+
+    if not new_videos:
         print("Žádná nová videa.")
 
     else:
-        print(f"Nalezeno nových videí: {len(found_new)}")
+        print(f"Nalezeno nových videí: {len(new_videos)}")
 
-        for video in found_new:
+        for video in new_videos:
 
             print()
             print(f"NOVÉ: {video['title']}")
@@ -179,7 +189,10 @@ def main():
 
             seen_video_ids.add(video["video_id"])
 
-    # Uložíme posledních 500 ID.
+    # ---------------------------------------------------------
+    # ULOŽENÍ STAVU
+    # ---------------------------------------------------------
+
     state["seen_video_ids"] = list(seen_video_ids)[-500:]
     state["last_checked_at"] = now.isoformat()
 
