@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 from datetime import datetime
-import re
-import unicodedata
 
 
 @dataclass
@@ -46,48 +44,11 @@ def index_included(data: dict) -> dict:
     }
 
 
-def make_goout_url(name: str, event_id: int) -> str:
-    """
-    Vytvoří standardní českou URL GoOut akce.
+def parse_schedule(
+    schedule: dict,
+    included: dict
+) -> GoOutEvent:
 
-    Například:
-
-        Román pro ženy
-        3324501
-
-    vytvoří:
-
-        https://goout.net/cs/roman-pro-zeny/events/3324501/
-    """
-
-    # Odstranění české diakritiky
-    slug = unicodedata.normalize(
-        "NFKD",
-        name
-    ).encode(
-        "ascii",
-        "ignore"
-    ).decode(
-        "ascii"
-    )
-
-    # Malá písmena
-    slug = slug.lower()
-
-    # Všechno kromě písmen a číslic nahradíme pomlčkou
-    slug = re.sub(
-        r"[^a-z0-9]+",
-        "-",
-        slug
-    ).strip("-")
-
-    return (
-        f"https://goout.net/cs/"
-        f"{slug}/events/{event_id}/"
-    )
-
-
-def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
     schedule_attrs = schedule["attributes"]
     relationships = schedule["relationships"]
 
@@ -96,27 +57,55 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
     # -------------------------
 
     event_id = relationships["event"]["id"]
+
     event = included["events"][event_id]
 
     event_attrs = event["attributes"]
-    event_cs = event.get("locales", {}).get("cs", {})
-    event_relationships = event.get("relationships", {})
+
+    event_cs = event.get(
+        "locales",
+        {}
+    ).get(
+        "cs",
+        {}
+    )
+
+    event_relationships = event.get(
+        "relationships",
+        {}
+    )
 
     # -------------------------
     # VENUE
     # -------------------------
 
     venue_id = relationships["venue"]["id"]
-    venue = included["venues"].get(venue_id, {})
 
-    venue_attrs = venue.get("attributes", {})
-    venue_cs = venue.get("locales", {}).get("cs", {})
+    venue = included["venues"].get(
+        venue_id,
+        {}
+    )
+
+    venue_attrs = venue.get(
+        "attributes",
+        {}
+    )
+
+    venue_cs = venue.get(
+        "locales",
+        {}
+    ).get(
+        "cs",
+        {}
+    )
 
     # -------------------------
     # PRICE + TICKETS
     # -------------------------
 
-    pricing = schedule_attrs.get("pricing")
+    pricing = schedule_attrs.get(
+        "pricing"
+    )
 
     # GoOut někdy vrací do pricing URL
     # externího prodejce místo ceny.
@@ -133,10 +122,15 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
 
     # Pokud není externí prodejce,
     # zkusíme GoOut sale.
-    sale_relation = relationships.get("sale")
+    sale_relation = relationships.get(
+        "sale"
+    )
 
     if not tickets_url and sale_relation:
-        sale_id = sale_relation.get("id")
+
+        sale_id = sale_relation.get(
+            "id"
+        )
 
         sale = included.get(
             "sales",
@@ -146,6 +140,7 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         )
 
         if sale:
+
             sale_attrs = sale.get(
                 "attributes",
                 {}
@@ -165,6 +160,7 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         "images",
         []
     ):
+
         image_id = image_relation["id"]
 
         image = included.get(
@@ -175,6 +171,7 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         )
 
         if image:
+
             image_url = image.get(
                 "attributes",
                 {}
@@ -188,25 +185,31 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
                 )
 
     # -------------------------
-    # EVENT URL
+    # URL
     # -------------------------
 
-    event_name = event_cs.get(
-        "name",
-        ""
+    # Správná URL GoOut je přímo
+    # v schedule -> locales -> cs -> siteUrl.
+    #
+    # Například:
+    # https://goout.net/cs/roman-pro-zeny/szeejdy/
+
+    url = (
+        schedule
+        .get("locales", {})
+        .get("cs", {})
+        .get("siteUrl")
     )
 
-    # Nepoužíváme event.url ani siteUrl,
-    # protože GoOut API může vracet zkrácenou
-    # URL typu:
-    #
-    # https://goout.net/event/3324501
-    #
-    # Místo toho vytvoříme standardní URL.
-    event_url = make_goout_url(
-        event_name,
-        event_id
-    )
+    # Záložní možnost:
+    # pokud by schedule siteUrl neměl,
+    # zkusíme event siteUrl.
+    if not url:
+
+        url = (
+            event_cs.get("siteUrl")
+            or event.get("url")
+        )
 
     # -------------------------
     # RESULT
@@ -216,7 +219,11 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         schedule_id=schedule["id"],
         event_id=event_id,
 
-        name=event_name,
+        name=event_cs.get(
+            "name",
+            ""
+        ),
+
         description=event_cs.get(
             "description"
         ),
@@ -234,12 +241,15 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         ),
 
         venue_id=venue_id,
+
         venue_name=venue_cs.get(
             "name"
         ),
+
         address=venue_attrs.get(
             "address"
         ),
+
         city=venue_attrs.get(
             "city"
         ),
@@ -247,17 +257,19 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
         category=event_attrs.get(
             "mainCategory"
         ),
+
         tags=event_attrs.get(
             "tags",
             []
         ),
 
         price=price,
+
         currency=schedule_attrs.get(
             "currency"
         ),
 
-        url=event_url,
+        url=url,
 
         tickets_url=tickets_url,
 
@@ -277,8 +289,13 @@ def parse_schedule(schedule: dict, included: dict) -> GoOutEvent:
     )
 
 
-def parse_events(data: dict) -> list[GoOutEvent]:
-    included = index_included(data)
+def parse_events(
+    data: dict
+) -> list[GoOutEvent]:
+
+    included = index_included(
+        data
+    )
 
     return [
         parse_schedule(
