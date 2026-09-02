@@ -1,4 +1,4 @@
-```python
+```text
 import os
 import json
 import base64
@@ -253,14 +253,12 @@ def handle_command(text):
 def process_telegram_updates():
     print("Kontroluji Telegram...")
 
-    data = {
-        "timeout": 0,
-        "allowed_updates": json.dumps(["message"]),
-    }
-
     updates = telegram_request(
         "getUpdates",
-        data,
+        {
+            "timeout": 0,
+            "allowed_updates": json.dumps(["message"]),
+        },
     )
 
     updates_list = updates.get(
@@ -319,7 +317,6 @@ def process_telegram_updates():
             )
 
     if last_update_id is not None:
-
         telegram_request(
             "getUpdates",
             {
@@ -395,7 +392,8 @@ def save_state(state):
 def check_youtube():
     print("Kontroluji YouTube...")
 
-    config = load_config_from_github()[0]
+    config, _ = load_config_from_github()
+
     state = load_state()
 
     keywords = config.get(
@@ -416,6 +414,7 @@ def check_youtube():
     first_run = len(seen_video_ids) == 0
 
     all_seen_ids = set(seen_video_ids)
+
     new_videos = []
 
     for keyword in keywords:
@@ -466,7 +465,21 @@ def check_youtube():
                 "",
             )
 
+            channel_title = snippet.get(
+                "channelTitle",
+                "",
+            )
+
+            title = snippet.get(
+                "title",
+                "",
+            )
+
             if channel_id in excluded_ids:
+                print(
+                    f"Ignoruji vyloučený kanál: "
+                    f"{channel_title}"
+                )
                 continue
 
             if video_id in all_seen_ids:
@@ -476,18 +489,8 @@ def check_youtube():
                 {
                     "video_id": video_id,
                     "keyword": keyword,
-                    "title": snippet.get(
-                        "title",
-                        "",
-                    ),
-                    "channel_title": snippet.get(
-                        "channelTitle",
-                        "",
-                    ),
-                    "published_at": snippet.get(
-                        "publishedAt",
-                        "",
-                    ),
+                    "title": title,
+                    "channel_title": channel_title,
                 }
             )
 
@@ -496,8 +499,8 @@ def check_youtube():
     if first_run:
 
         print(
-            "První spuštění - pouze ukládám "
-            "nalezená videa jako základ."
+            "První spuštění - ukládám nalezená "
+            "videa jako základ."
         )
 
     else:
@@ -519,6 +522,11 @@ def check_youtube():
 
             try:
                 send_message(message)
+
+                print(
+                    f"Telegram: odesláno - "
+                    f"{video['title']}"
+                )
 
             except Exception as error:
                 print(
@@ -552,6 +560,7 @@ def main():
 
     try:
         process_telegram_updates()
+
     except Exception as error:
         print(
             f"Telegram chyba: {error}"
@@ -559,6 +568,7 @@ def main():
 
     try:
         check_youtube()
+
     except Exception as error:
         print(
             f"YouTube chyba: {error}"
