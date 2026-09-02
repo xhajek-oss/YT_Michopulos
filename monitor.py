@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import urllib.parse
@@ -9,7 +8,6 @@ from datetime import datetime, timezone
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-
 
 CONFIG_FILE = "config.json"
 STATE_FILE = "data/seen_videos.json"
@@ -65,7 +63,11 @@ def send_telegram_message(text):
 
 
 def load_config():
-    with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+    with open(
+        CONFIG_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
         return json.load(file)
 
 
@@ -73,11 +75,24 @@ def load_state():
     if not os.path.exists(STATE_FILE):
         return {
             "seen_video_ids": [],
+            "initialized_keywords": [],
             "last_checked_at": None,
         }
 
-    with open(STATE_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
+    with open(
+        STATE_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        state = json.load(file)
+
+    if "seen_video_ids" not in state:
+        state["seen_video_ids"] = []
+
+    if "initialized_keywords" not in state:
+        state["initialized_keywords"] = []
+
+    return state
 
 
 def save_state(state):
@@ -100,30 +115,41 @@ def save_state(state):
 
 
 def get_video_url(video_id):
-    return f"https://www.youtube.com/watch?v={video_id}"
+    return (
+        f"https://www.youtube.com/watch?v={video_id}"
+    )
 
 
 def main():
-    print("YouTube Monitor - jednorázová kontrola.")
+    print("================================")
+    print("YouTube Monitor")
+    print("================================")
 
     config = load_config()
     state = load_state()
 
-    keywords = config.get("keywords", [])
+    keywords = config.get(
+        "keywords",
+        [],
+    )
+
     exclude_channels = config.get(
         "exclude_channels",
         {},
     )
 
-    seen_video_ids = state.get(
-        "seen_video_ids",
-        [],
+    seen_video_ids = set(
+        state.get(
+            "seen_video_ids",
+            [],
+        )
     )
 
-    first_run = len(seen_video_ids) == 0
-
-    print(
-        f"Sleduji {len(keywords)} klíčových slov."
+    initialized_keywords = set(
+        state.get(
+            "initialized_keywords",
+            [],
+        )
     )
 
     if not keywords:
@@ -131,31 +157,28 @@ def main():
             "Není nastaveno žádné klíčové slovo."
         )
 
-        state["last_checked_at"] = (
-            datetime.now(timezone.utc).isoformat()
-        )
-
-        save_state(state)
         return
-
-    all_seen_ids = set(seen_video_ids)
 
     new_videos = []
 
     for keyword in keywords:
 
         print(
-            f"Kontroluji YouTube pro: {keyword}"
+            f"Kontroluji: {keyword}"
         )
 
         try:
-            result = youtube_search(keyword)
+            result = youtube_search(
+                keyword
+            )
 
         except Exception as error:
+
             print(
-                f"Chyba při hledání '{keyword}': "
-                f"{error}"
+                f"Chyba při hledání "
+                f"'{keyword}': {error}"
             )
+
             continue
 
         excluded_ids = set(
@@ -165,12 +188,12 @@ def main():
             )
         )
 
-        items = result.get(
+        current_video_ids = []
+
+        for item in result.get(
             "items",
             [],
-        )
-
-        for item in items:
+        ):
 
             video_id = item.get(
                 "id",
@@ -181,7 +204,7 @@ def main():
 
             snippet = item.get(
                 "snippet",
-                {}
+                {},
             )
 
             if not video_id:
@@ -202,92 +225,112 @@ def main():
                 "",
             )
 
-            published_at = snippet.get(
-                "publishedAt",
-                "",
-            )
-
             if channel_id in excluded_ids:
+
                 print(
-                    f"Ignoruji video z vyloučeného "
-                    f"kanálu: {channel_title}"
+                    f"Ignoruji vyloučený kanál: "
+                    f"{channel_title}"
                 )
+
                 continue
 
-            if video_id in all_seen_ids:
-                continue
-
-            video = {
-                "video_id": video_id,
-                "keyword": keyword,
-                "title": title,
-                "channel_title": channel_title,
-                "channel_id": channel_id,
-                "published_at": published_at,
-            }
-
-            new_videos.append(video)
-            all_seen_ids.add(video_id)
-
-    # Při prvním spuštění pouze vytvoříme základ.
-    # Nechceme uživatele zahlcovat starými videi.
-    if first_run:
-
-        print(
-            f"První spuštění - ukládám "
-            f"{len(all_seen_ids)} videí jako základ."
-        )
-
-    else:
-
-        print(
-            f"Nových videí: {len(new_videos)}"
-        )
-
-        for video in new_videos:
-
-            message = (
-                "🎬 Nové video na YouTube\n\n"
-                f"🔎 Hledání: {video['keyword']}\n"
-                f"📺 Kanál: {video['channel_title']}\n"
-                f"📝 {video['title']}\n\n"
-                f"{get_video_url(video['video_id'])}"
+            current_video_ids.append(
+                video_id
             )
 
-            try:
-                send_telegram_message(message)
+            if keyword not in initialized_keywords:
+                continue
 
-                print(
-                    f"Odesláno Telegramem: "
-                    f"{video['title']}"
-                )
+            if video_id in seen_video_ids:
+                continue
 
-            except Exception as error:
-                print(
-                    f"Chyba při odesílání Telegramu: "
-                    f"{error}"
-                )
+            new_videos.append(
+                {
+                    "video_id": video_id,
+                    "keyword": keyword,
+                    "title": title,
+                    "channel_title": channel_title,
+                }
+            )
 
-    # Uchováme maximálně posledních 500 videí.
-    updated_seen_ids = list(all_seen_ids)
+        if keyword not in initialized_keywords:
+
+            print(
+                f"První kontrola '{keyword}': "
+                f"ukládám "
+                f"{len(current_video_ids)} "
+                "videí jako základ."
+            )
+
+            initialized_keywords.add(
+                keyword
+            )
+
+        for video_id in current_video_ids:
+            seen_video_ids.add(
+                video_id
+            )
+
+    print(
+        f"Nových videí: {len(new_videos)}"
+    )
+
+    for video in new_videos:
+
+        message = (
+            "🎬 Nové video na YouTube\n\n"
+            f"🔎 {video['keyword']}\n"
+            f"📺 {video['channel_title']}\n"
+            f"📝 {video['title']}\n\n"
+            f"{get_video_url(video['video_id'])}"
+        )
+
+        try:
+
+            send_telegram_message(
+                message
+            )
+
+            print(
+                f"Odesláno: "
+                f"{video['title']}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"Chyba při odesílání "
+                f"Telegramu: {error}"
+            )
+
+    updated_seen_ids = list(
+        seen_video_ids
+    )
 
     if len(updated_seen_ids) > 500:
-        updated_seen_ids = updated_seen_ids[-500:]
+
+        updated_seen_ids = (
+            updated_seen_ids[-500:]
+        )
 
     state = {
         "seen_video_ids": updated_seen_ids,
+        "initialized_keywords": sorted(
+            initialized_keywords
+        ),
         "last_checked_at": (
-            datetime.now(timezone.utc).isoformat()
+            datetime.now(
+                timezone.utc
+            ).isoformat()
         ),
     }
 
     save_state(state)
 
     print(
-        "YouTube kontrola dokončena."
+        "Kontrola dokončena."
     )
 
 
 if __name__ == "__main__":
     main()
-```
