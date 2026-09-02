@@ -4,6 +4,7 @@ import json
 import hashlib
 import re
 from datetime import datetime, date, timedelta
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -24,12 +25,29 @@ HEADERS = {
 }
 
 
+GENERIC_TITLES = {
+    "více informací",
+    "koupit vstupenky",
+    "vstupenky",
+    "detail akce",
+    "close",
+    "galerie",
+    "na mapě",
+    "na mape",
+    "top",
+}
+
+
 def load_json(path, default):
     if not os.path.exists(path):
         return default
 
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Chyba při načítání JSON {path}: {e}")
+        return default
 
 
 def save_json(path, data):
@@ -46,13 +64,28 @@ def normalize_text(text):
     if not text:
         return ""
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", str(text))
     return text.strip()
+
+
+def normalize_title_for_match(title):
+    title = normalize_text(title).lower()
+
+    title = title.replace("…", " ")
+    title = title.replace("...", " ")
+
+    title = re.sub(r"[^a-z0-9áčďéěíňóřšťúůýž ]", " ", title)
+    title = re.sub(r"\s+", " ", title)
+
+    return title.strip()
 
 
 def make_id(title, event_date, event_time):
     raw = f"{title}|{event_date}|{event_time}".lower()
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    return hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def make_signature(event):
@@ -72,7 +105,9 @@ def make_signature(event):
         sort_keys=True,
     )
 
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()
 
 
 def parse_czech_date(text):
@@ -111,12 +146,18 @@ def parse_time(text):
     if not text:
         return None
 
-    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    match = re.search(
+        r"\b([01]?\d|2[0-3]):([0-5]\d)\b",
+        text,
+    )
 
     if not match:
         return None
 
-    return f"{int(match.group(1)):02d}:{match.group(2)}"
+    return (
+        f"{int(match.group(1)):02d}:"
+        f"{match.group(2)}"
+    )
 
 
 def clean_title(title):
@@ -125,39 +166,37 @@ def clean_title(title):
 
     title = normalize_text(title)
 
-    unwanted = [
-        "Více informací",
-        "Koupit vstupenky",
-        "Vstupenky",
-        "Detail akce",
-    ]
-
-    for unwanted_text in unwanted:
-        if title.lower() == unwanted_text.lower():
-            return ""
+    if title.lower() in GENERIC_TITLES:
+        return ""
 
     return title
 
 
 def title_from_sms_url(url):
     """
-    SMS Ticket URL typicky vypadá např.:
+    Příklad:
 
     /vstupenky/67010-jiri-charvat-komik-ktery-neexistuje-kd-hronovicka-pardubice
 
-    Název získáme ze slug části URL.
+    Výsledkem bude:
+
+    JIRI CHARVAT KOMIK KTERY NEEXISTUJE
     """
+
     if not url:
         return ""
 
-    match = re.search(r"/vstupenky/[^/]+-([^/?#]+)", url)
+    match = re.search(
+        r"/vstupenky/[^/]+-([^/?#]+)",
+        url,
+        flags=re.IGNORECASE,
+    )
 
     if not match:
         return ""
 
     slug = match.group(1)
 
-    # Odstraníme typické koncovky místa.
     slug = re.sub(
         r"-kd-hronovicka-pardubice$",
         "",
@@ -166,54 +205,155 @@ def title_from_sms_url(url):
     )
 
     slug = slug.replace("-", " ")
-
     slug = normalize_text(slug)
 
     if not slug:
         return ""
 
-    # Hezké zobrazení názvu.
     return slug.upper()
 
 
-def extract_sms_title(link, surrounding_text):
+def extract_sms_title(link, block_text):
     """
-    Priorita:
-    1. skutečný text odkazu, pokud není generický
-    2. title/aria-label atribut
-    3. název z URL
-    4. okolní text
+    U SMS Ticketu je odkaz často pojmenovaný pouze
+    „Více informací“.
+
+    Proto:
+    1. zkusíme text odkazu,
+    2. atributy,
+    3. název z URL,
+    4. až nakonec okolní text.
     """
 
     candidates = []
 
-    link_text = clean_title(link.get_text(" ", strip=True))
+    link_text = clean_title(
+        link.get_text(" ", strip=True)
+    )
+
     if link_text:
         candidates.append(link_text)
 
-    for attr in ["title", "aria-label", "data-title"]:
-        value = clean_title(link.get(attr))
+    for attr in [
+        "title",
+        "aria-label",
+        "data-title",
+    ]:
+        value = clean_title(
+            link.get(attr)
+        )
+
         if value:
             candidates.append(value)
 
-    url_title = title_from_sms_url(link.get("href", ""))
+    url_title = title_from_sms_url(
+        link.get("href", "")
+    )
+
     if url_title:
         candidates.append(url_title)
 
-    surrounding_text = clean_title(surrounding_text)
-    if surrounding_text:
-        candidates.append(surrounding_text)
-
     for candidate in candidates:
-        if candidate.lower() not in {
-            "více informací",
-            "koupit vstupenky",
-            "vstupenky",
-            "detail akce",
-        }:
+        if candidate.lower() not in GENERIC_TITLES:
             return candidate
 
+    # Pokud nic jiného není, zkusíme z okolního
+    # textu najít část před datem.
+    if block_text:
+        text = normalize_text(block_text)
+
+        date_match = re.search(
+            r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}",
+            text,
+        )
+
+        if date_match:
+            before_date = text[
+                :date_match.start()
+            ].strip()
+
+            before_date = re.sub(
+                r"^(více informací|koupit vstupenky)\s*",
+                "",
+                before_date,
+                flags=re.IGNORECASE,
+            )
+
+            before_date = normalize_text(
+                before_date
+            )
+
+            if (
+                before_date
+                and len(before_date) <= 120
+                and before_date.lower()
+                not in GENERIC_TITLES
+            ):
+                return before_date
+
     return ""
+
+
+def find_event_container(element, max_levels=8):
+    """
+    Najde nejmenší rodičovský element, který
+    pravděpodobně obsahuje celý event.
+
+    Nevyžadujeme současně datum + čas.
+    Stačí, když obsahuje datum nebo čas.
+    """
+
+    current = element
+
+    for _ in range(max_levels):
+        if current.parent is None:
+            break
+
+        text = normalize_text(
+            current.get_text(" ", strip=True)
+        )
+
+        has_date = bool(
+            re.search(
+                r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}",
+                text,
+            )
+        )
+
+        has_time = bool(
+            re.search(
+                r"\b([01]?\d|2[0-3]):[0-5]\d\b",
+                text,
+            )
+        )
+
+        if (
+            len(text) >= 20
+            and (has_date or has_time)
+        ):
+            return current
+
+        current = current.parent
+
+    return element.parent or element
+
+
+def extract_event_block(element, max_chars=1000):
+    container = find_event_container(
+        element
+    )
+
+    text = normalize_text(
+        container.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    if len(text) > max_chars:
+        text = text[:max_chars]
+
+    return text
 
 
 def parse_sms_ticket(url):
@@ -225,21 +365,31 @@ def parse_sms_ticket(url):
             headers=HEADERS,
             timeout=30,
         )
+
         response.raise_for_status()
+
     except Exception as e:
-        print(f"SMS Ticket: chyba při načítání: {e}")
+        print(
+            f"SMS Ticket: chyba při načítání: {e}"
+        )
+
         return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
 
     events = []
+    seen_urls = set()
 
     links = soup.find_all(
         "a",
-        href=lambda href: href and "/vstupenky/" in href,
+        href=lambda href: (
+            href
+            and "/vstupenky/" in href
+        ),
     )
-
-    seen_urls = set()
 
     for link in links:
         href = link.get("href")
@@ -247,44 +397,27 @@ def parse_sms_ticket(url):
         if not href:
             continue
 
-        if href.startswith("/"):
-            full_url = "https://www.smsticket.cz" + href
-        elif href.startswith("http"):
-            full_url = href
-        else:
-            continue
+        full_url = urljoin(
+            "https://www.smsticket.cz",
+            href,
+        )
 
         if full_url in seen_urls:
             continue
 
         seen_urls.add(full_url)
 
-        # Najdeme co nejmenší rozumný rodičovský blok.
-        container = link
-
-        for _ in range(5):
-            if container.parent is None:
-                break
-
-            text = normalize_text(container.get_text(" ", strip=True))
-
-            if (
-                len(text) >= 20
-                and (
-                    re.search(r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}", text)
-                    or re.search(r"\b\d{1,2}:\d{2}\b", text)
-                )
-            ):
-                break
-
-            container = container.parent
-
-        block_text = normalize_text(
-            container.get_text(" ", strip=True)
+        block_text = extract_event_block(
+            link
         )
 
-        event_date = parse_czech_date(block_text)
-        event_time = parse_time(block_text)
+        event_date = parse_czech_date(
+            block_text
+        )
+
+        event_time = parse_time(
+            block_text
+        )
 
         if not event_date or not event_time:
             continue
@@ -295,10 +428,14 @@ def parse_sms_ticket(url):
         )
 
         if not title:
-            print(f"SMS Ticket: nepodařilo se určit název: {full_url}")
+            print(
+                "SMS Ticket: "
+                f"nepodařilo se určit název: "
+                f"{full_url}"
+            )
+
             continue
 
-        # Cena
         price = None
 
         price_match = re.search(
@@ -308,19 +445,23 @@ def parse_sms_ticket(url):
         )
 
         if price_match:
-            price = normalize_text(
-                price_match.group(1)
-            ) + " Kč"
+            price = (
+                normalize_text(
+                    price_match.group(1)
+                )
+                + " Kč"
+            )
 
-        # Dostupnost
         availability = None
 
         lower_block = block_text.lower()
 
         if "vyprodáno" in lower_block:
             availability = "Vyprodáno"
+
         elif "v prodeji" in lower_block:
             availability = "V prodeji"
+
         elif "prodej zahájen" in lower_block:
             availability = "V prodeji"
 
@@ -345,27 +486,171 @@ def parse_sms_ticket(url):
 
         events.append(event)
 
-    # Odstranění duplicit.
     unique = {}
 
     for event in events:
         key = (
-            event["title"].lower(),
+            normalize_title_for_match(
+                event["title"]
+            ),
             event["date"],
             event["time"],
         )
 
         unique[key] = event
 
-    events = list(unique.values())
+    events = list(
+        unique.values()
+    )
 
-    print(f"SMS Ticket: nalezeno {len(events)} akcí")
+    events.sort(
+        key=lambda event: (
+            event["date"],
+            event["time"],
+            event["title"].lower(),
+        )
+    )
+
+    print(
+        f"SMS Ticket: nalezeno "
+        f"{len(events)} akcí"
+    )
 
     return events
 
 
+def extract_ticketportal_title(link, container):
+    """
+    Ticketportal někdy obsahuje název přímo
+    v odkazu, jindy v okolním elementu.
+
+    Neakceptujeme obecné navigační názvy.
+    """
+
+    candidates = []
+
+    link_text = clean_title(
+        link.get_text(" ", strip=True)
+    )
+
+    if link_text:
+        candidates.append(link_text)
+
+    for attr in [
+        "title",
+        "aria-label",
+        "data-title",
+    ]:
+        value = clean_title(
+            link.get(attr)
+        )
+
+        if value:
+            candidates.append(value)
+
+    # Zkusíme heading uvnitř event bloku.
+    for tag_name in [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "strong",
+    ]:
+        for element in container.find_all(
+            tag_name
+        ):
+            text = clean_title(
+                element.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            if text:
+                candidates.append(text)
+
+    # Vybereme první smysluplný kandidát.
+    for candidate in candidates:
+        candidate = normalize_text(
+            candidate
+        )
+
+        if not candidate:
+            continue
+
+        if candidate.lower() in GENERIC_TITLES:
+            continue
+
+        if len(candidate) > 160:
+            continue
+
+        return candidate
+
+    return ""
+
+
+def parse_ticketportal_event_from_link(link):
+    """
+    Parsuje jednu Ticketportal event položku.
+
+    Zkouší několik úrovní rodičovského HTML,
+    protože struktura stránky se může měnit.
+    """
+
+    current = link
+
+    for level in range(1, 11):
+        if current is None:
+            break
+
+        text = normalize_text(
+            current.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        event_date = parse_czech_date(
+            text
+        )
+
+        event_time = parse_time(
+            text
+        )
+
+        if (
+            event_date
+            and event_time
+            and len(text) >= 20
+        ):
+            title = extract_ticketportal_title(
+                link,
+                current,
+            )
+
+            if title:
+                return (
+                    title,
+                    event_date,
+                    event_time,
+                    text,
+                )
+
+        current = current.parent
+
+    return (
+        None,
+        None,
+        None,
+        "",
+    )
+
+
 def parse_ticketportal(url):
-    print(f"Načítám Ticketportal: {url}")
+    print(
+        f"Načítám Ticketportal: {url}"
+    )
 
     try:
         response = requests.get(
@@ -373,21 +658,32 @@ def parse_ticketportal(url):
             headers=HEADERS,
             timeout=30,
         )
+
         response.raise_for_status()
+
     except Exception as e:
-        print(f"Ticketportal: chyba při načítání: {e}")
+        print(
+            f"Ticketportal: "
+            f"chyba při načítání: {e}"
+        )
+
         return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
 
     events = []
+    seen_urls = set()
 
     links = soup.find_all(
         "a",
-        href=lambda href: href and "/Event/" in href,
+        href=lambda href: (
+            href
+            and "/Event/" in href
+        ),
     )
-
-    seen_urls = set()
 
     for link in links:
         href = link.get("href")
@@ -395,66 +691,40 @@ def parse_ticketportal(url):
         if not href:
             continue
 
-        if href.startswith("/"):
-            full_url = "https://www.ticketportal.cz" + href
-        elif href.startswith("http"):
-            full_url = href
-        else:
-            continue
+        full_url = urljoin(
+            "https://www.ticketportal.cz",
+            href,
+        )
 
         if full_url in seen_urls:
             continue
 
         seen_urls.add(full_url)
 
-        title = clean_title(
-            link.get_text(" ", strip=True)
+        (
+            title,
+            event_date,
+            event_time,
+            block_text,
+        ) = parse_ticketportal_event_from_link(
+            link
         )
 
-        if not title:
-            for attr in ["title", "aria-label"]:
-                title = clean_title(link.get(attr))
-                if title:
-                    break
-
-        if not title:
-            continue
-
-        # Ticketportal event blok.
-        container = link
-
-        for _ in range(6):
-            if container.parent is None:
-                break
-
-            text = normalize_text(
-                container.get_text(" ", strip=True)
-            )
-
-            if (
-                re.search(r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}", text)
-                and re.search(r"\b\d{1,2}:\d{2}\b", text)
-            ):
-                break
-
-            container = container.parent
-
-        block_text = normalize_text(
-            container.get_text(" ", strip=True)
-        )
-
-        event_date = parse_czech_date(block_text)
-        event_time = parse_time(block_text)
-
-        if not event_date or not event_time:
+        if (
+            not title
+            or not event_date
+            or not event_time
+        ):
             continue
 
         lower_block = block_text.lower()
 
         if "vyprodáno" in lower_block:
             availability = "Vyprodáno"
+
         elif "v prodeji" in lower_block:
             availability = "V prodeji"
+
         else:
             availability = None
 
@@ -483,22 +753,40 @@ def parse_ticketportal(url):
 
     for event in events:
         key = (
-            event["title"].lower(),
+            normalize_title_for_match(
+                event["title"]
+            ),
             event["date"],
             event["time"],
         )
 
         unique[key] = event
 
-    events = list(unique.values())
+    events = list(
+        unique.values()
+    )
 
-    print(f"Ticketportal: nalezeno {len(events)} akcí")
+    events.sort(
+        key=lambda event: (
+            event["date"],
+            event["time"],
+            event["title"].lower(),
+        )
+    )
+
+    print(
+        f"Ticketportal: nalezeno "
+        f"{len(events)} akcí"
+    )
 
     return events
 
 
 def check_goout(url):
-    print("GoOut: JS-only stránka, akce zatím neparsujeme.")
+    print(
+        "GoOut: JS-only stránka, "
+        "akce zatím neparsujeme."
+    )
 
     try:
         response = requests.get(
@@ -509,94 +797,180 @@ def check_goout(url):
 
         if response.status_code != 200:
             print(
-                f"GoOut: HTTP {response.status_code}"
+                f"GoOut: HTTP "
+                f"{response.status_code}"
             )
 
     except Exception:
         pass
 
 
+def titles_match(title_a, title_b):
+    """
+    Mírná normalizace názvů pro deduplikaci.
+
+    Např.:
+    CAVEMAN
+    Caveman
+
+    se považují za stejnou akci.
+
+    Naopak různé názvy zůstávají oddělené.
+    """
+
+    a = normalize_title_for_match(
+        title_a
+    )
+
+    b = normalize_title_for_match(
+        title_b
+    )
+
+    if not a or not b:
+        return False
+
+    if a == b:
+        return True
+
+    # Malá tolerance pro názvy, kdy jeden zdroj
+    # obsahuje pouze část názvu.
+    if len(a) >= 8 and len(b) >= 8:
+        if a in b or b in a:
+            return True
+
+    return False
+
+
 def merge_events(events):
     """
-    Sloučení stejné akce z více zdrojů.
+    Sloučí stejnou akci z více zdrojů.
 
-    Klíč:
-        title + date + time
+    Primární shoda:
+        stejné datum + stejný čas + stejný název
 
-    Pokud se shoduje datum a čas, ale názvy se
-    mírně liší, zkusíme jednoduchou normalizaci.
+    Sekundární shoda:
+        stejné datum + stejný čas +
+        velmi podobný název
     """
 
-    merged = {}
+    merged = []
 
     for event in events:
         title = normalize_text(
             event.get("title", "")
         )
 
-        event_date = event.get("date")
-        event_time = event.get("time")
+        event_date = event.get(
+            "date"
+        )
 
-        if not title or not event_date or not event_time:
+        event_time = event.get(
+            "time"
+        )
+
+        if (
+            not title
+            or not event_date
+            or not event_time
+        ):
             continue
 
-        normalized_title = re.sub(
-            r"[^a-z0-9áčďéěíňóřšťúůýž ]",
+        found = None
+
+        for existing in merged:
+            if (
+                existing.get("date")
+                != event_date
+            ):
+                continue
+
+            if (
+                existing.get("time")
+                != event_time
+            ):
+                continue
+
+            if titles_match(
+                existing.get("title", ""),
+                title,
+            ):
+                found = existing
+                break
+
+        if found is None:
+            merged.append(
+                dict(event)
+            )
+            continue
+
+        # Pokud má jeden zdroj hezčí/
+        # smysluplnější název, ponecháme
+        # delší název.
+        existing_title = found.get(
+            "title",
             "",
-            title.lower(),
         )
 
-        normalized_title = normalize_text(
-            normalized_title
-        )
-
-        key = (
-            normalized_title,
-            event_date,
-            event_time,
-        )
-
-        if key not in merged:
-            merged[key] = dict(event)
-            continue
-
-        current = merged[key]
+        if len(title) > len(existing_title):
+            found["title"] = title
 
         # Zdroje
-        current_sources = set(
-            current.get("sources", [])
+        sources = set(
+            found.get("sources", [])
         )
-        current_sources.update(
+
+        sources.update(
             event.get("sources", [])
         )
-        current["sources"] = sorted(
-            current_sources
+
+        found["sources"] = sorted(
+            sources
         )
 
         # URL
-        current_urls = set(
-            current.get("urls", [])
+        urls = set(
+            found.get("urls", [])
         )
-        current_urls.update(
+
+        urls.update(
             event.get("urls", [])
         )
-        current["urls"] = sorted(
-            current_urls
+
+        found["urls"] = sorted(
+            urls
         )
 
         # Cena
-        if not current.get("price") and event.get("price"):
-            current["price"] = event["price"]
+        if (
+            not found.get("price")
+            and event.get("price")
+        ):
+            found["price"] = event[
+                "price"
+            ]
 
         # Dostupnost
         if event.get("availability"):
-            current["availability"] = event[
+            found["availability"] = event[
                 "availability"
             ]
 
-        merged[key] = current
+        # ID přepočítáme podle výsledného názvu.
+        found["id"] = make_id(
+            found["title"],
+            found["date"],
+            found["time"],
+        )
 
-    return list(merged.values())
+    merged.sort(
+        key=lambda event: (
+            event["date"],
+            event["time"],
+            event["title"].lower(),
+        )
+    )
+
+    return merged
 
 
 def get_period(mode):
@@ -606,11 +980,16 @@ def get_period(mode):
         return today, today
 
     if mode == "weekly":
-        # Pondělí až neděle
-        start = today - timedelta(
-            days=today.weekday()
+        start = (
+            today
+            - timedelta(
+                days=today.weekday()
+            )
         )
-        end = start + timedelta(days=6)
+
+        end = start + timedelta(
+            days=6
+        )
 
         return start, end
 
@@ -619,7 +998,11 @@ def get_period(mode):
     )
 
 
-def filter_period(events, start_date, end_date):
+def filter_period(
+    events,
+    start_date,
+    end_date,
+):
     result = []
 
     for event in events:
@@ -627,10 +1010,15 @@ def filter_period(events, start_date, end_date):
             event_date = date.fromisoformat(
                 event["date"]
             )
+
         except Exception:
             continue
 
-        if start_date <= event_date <= end_date:
+        if (
+            start_date
+            <= event_date
+            <= end_date
+        ):
             result.append(event)
 
     result.sort(
@@ -645,9 +1033,15 @@ def filter_period(events, start_date, end_date):
 
 
 def format_date_cz(date_string):
-    d = date.fromisoformat(date_string)
+    d = date.fromisoformat(
+        date_string
+    )
 
-    return f"{d.day}. {d.month}. {d.year}"
+    return (
+        f"{d.day}. "
+        f"{d.month}. "
+        f"{d.year}"
+    )
 
 
 def weekday_cz(d):
@@ -672,7 +1066,8 @@ def format_event(event):
     )
 
     lines.append(
-        f"📅 {event_date} | {event['time']}"
+        f"📅 {event_date} | "
+        f"{event['time']}"
     )
 
     lines.append(
@@ -685,25 +1080,46 @@ def format_event(event):
         )
 
     if event.get("availability"):
-        availability = event["availability"]
+        availability = event[
+            "availability"
+        ]
 
-        if availability.lower() == "v prodeji":
-            lines.append("🟢 V prodeji")
-        elif availability.lower() == "vyprodáno":
-            lines.append("🔴 Vyprodáno")
+        if (
+            availability.lower()
+            == "v prodeji"
+        ):
+            lines.append(
+                "🟢 V prodeji"
+            )
+
+        elif (
+            availability.lower()
+            == "vyprodáno"
+        ):
+            lines.append(
+                "🔴 Vyprodáno"
+            )
+
         else:
             lines.append(
                 f"ℹ️ {availability}"
             )
 
-    sources = event.get("sources", [])
+    sources = event.get(
+        "sources",
+        [],
+    )
 
     if sources:
         lines.append(
-            "🌐 " + " + ".join(sources)
+            "🌐 "
+            + " + ".join(sources)
         )
 
-    urls = event.get("urls", [])
+    urls = event.get(
+        "urls",
+        [],
+    )
 
     if urls:
         lines.append(
@@ -716,18 +1132,22 @@ def format_event(event):
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN:
         print(
-            "Telegram: chybí TELEGRAM_BOT_TOKEN"
+            "Telegram: chybí "
+            "TELEGRAM_BOT_TOKEN"
         )
+
         return False
 
     if not TELEGRAM_CHAT_ID:
         print(
-            "Telegram: chybí TELEGRAM_CHAT_ID"
+            "Telegram: chybí "
+            "TELEGRAM_CHAT_ID"
         )
+
         return False
 
     url = (
-        f"https://api.telegram.org/bot"
+        "https://api.telegram.org/bot"
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
@@ -750,8 +1170,10 @@ def send_telegram(message):
 
     except Exception as e:
         print(
-            f"Telegram: chyba při odesílání: {e}"
+            "Telegram: chyba při "
+            f"odesílání: {e}"
         )
+
         return False
 
 
@@ -763,9 +1185,11 @@ def build_message(mode, events):
         today = date.today()
 
         heading = (
-            f"🎭 KULTURA – "
+            "🎭 KULTURA – "
             f"{weekday_cz(today)} "
-            f"{today.day}. {today.month}. {today.year}"
+            f"{today.day}. "
+            f"{today.month}. "
+            f"{today.year}"
         )
 
     else:
@@ -774,10 +1198,12 @@ def build_message(mode, events):
         )
 
         heading = (
-            f"🎭 KULTURA – týden "
-            f"{start_date.day}. {start_date.month}. "
-            f"– "
-            f"{end_date.day}. {end_date.month}. "
+            "🎭 KULTURA – týden "
+            f"{start_date.day}. "
+            f"{start_date.month}. "
+            "– "
+            f"{end_date.day}. "
+            f"{end_date.month}. "
             f"{end_date.year}"
         )
 
@@ -788,7 +1214,11 @@ def build_message(mode, events):
             format_event(event)
         )
 
-    return heading + "\n\n" + "\n\n".join(blocks)
+    return (
+        heading
+        + "\n\n"
+        + "\n\n".join(blocks)
+    )
 
 
 def main():
@@ -797,21 +1227,35 @@ def main():
     if len(sys.argv) > 1:
         mode = sys.argv[1]
 
-    if mode not in ["daily", "weekly"]:
+    if mode not in [
+        "daily",
+        "weekly",
+    ]:
         print(
-            "Použití: python culture_monitor.py "
+            "Použití: "
+            "python culture_monitor.py "
             "[daily|weekly]"
         )
+
         sys.exit(1)
 
     print("=" * 70)
-    print("KULTURA MONITOR – KD HRONOVICKÁ")
-    print("=" * 70)
-    print(f"Režim: {mode}")
     print(
-        f"Dnes: {date.today().day}. "
-        f"{date.today().month}. "
-        f"{date.today().year}"
+        "KULTURA MONITOR – "
+        "KD HRONOVICKÁ"
+    )
+    print("=" * 70)
+
+    print(
+        f"Režim: {mode}"
+    )
+
+    today = date.today()
+
+    print(
+        f"Dnes: {today.day}. "
+        f"{today.month}. "
+        f"{today.year}"
     )
 
     config = load_json(
@@ -830,14 +1274,24 @@ def main():
 
     all_events = []
 
-    for venue in config.get("venues", []):
-        sources = venue.get("sources", {})
+    for venue in config.get(
+        "venues",
+        [],
+    ):
+        sources = venue.get(
+            "sources",
+            {},
+        )
 
-        sms_url = sources.get("smsticket")
+        sms_url = sources.get(
+            "smsticket"
+        )
 
         if sms_url:
             all_events.extend(
-                parse_sms_ticket(sms_url)
+                parse_sms_ticket(
+                    sms_url
+                )
             )
 
         ticketportal_url = sources.get(
@@ -851,25 +1305,34 @@ def main():
                 )
             )
 
-        goout_url = sources.get("goout")
+        goout_url = sources.get(
+            "goout"
+        )
 
         if goout_url:
-            check_goout(goout_url)
+            check_goout(
+                goout_url
+            )
 
     events = merge_events(
         all_events
     )
 
     print(
-        f"Celkem po sloučení zdrojů: "
+        "Celkem po sloučení zdrojů: "
         f"{len(events)} akcí"
     )
 
     now = datetime.now().isoformat()
 
-    # První spuštění:
-    # pouze uložit stav, neposílat Telegram.
-    if not state.get("initialized", False):
+    # -------------------------------------------------
+    # PRVNÍ SPUŠTĚNÍ
+    # -------------------------------------------------
+
+    if not state.get(
+        "initialized",
+        False,
+    ):
         signatures = {}
 
         for event in events:
@@ -895,13 +1358,19 @@ def main():
         )
 
         print(
-            "PRVNÍ SPUŠTĚNÍ – ukládám aktuální stav."
+            "PRVNÍ SPUŠTĚNÍ – "
+            "ukládám aktuální stav."
         )
+
         print(
             "Telegram nebude odeslán."
         )
 
         return
+
+    # -------------------------------------------------
+    # POROVNÁNÍ SE STARÝM STAVEM
+    # -------------------------------------------------
 
     old_signatures = state.get(
         "signatures",
@@ -913,6 +1382,7 @@ def main():
 
     for event in events:
         event_id = event["id"]
+
         signature = make_signature(
             event
         )
@@ -928,18 +1398,32 @@ def main():
         )
 
         if old is None:
-            changed_events.append(event)
+            changed_events.append(
+                event
+            )
 
-        elif old.get("signature") != signature:
-            changed_events.append(event)
+        elif (
+            old.get("signature")
+            != signature
+        ):
+            changed_events.append(
+                event
+            )
 
-    state["signatures"] = new_signatures
+    state["signatures"] = (
+        new_signatures
+    )
+
     state["last_run"] = now
 
     save_json(
         STATE_FILE,
         state,
     )
+
+    # -------------------------------------------------
+    # AKTUÁLNÍ OBDOBÍ
+    # -------------------------------------------------
 
     start_date, end_date = get_period(
         mode
@@ -952,23 +1436,25 @@ def main():
     )
 
     print(
-        f"Nové/změněné akce: "
+        "Nové/změněné akce: "
         f"{len(changed_events)}"
     )
 
     print(
-        f"Nové/změněné akce v období: "
+        "Nové/změněné akce v období: "
         f"{len(period_events)}"
     )
 
     if not period_events:
         print(
-            "Žádná nová nebo změněná akce "
-            "v aktuálním období."
+            "Žádná nová nebo změněná "
+            "akce v aktuálním období."
         )
+
         print(
             "Telegram nebude odeslán."
         )
+
         return
 
     message = build_message(
@@ -980,6 +1466,7 @@ def main():
         print(
             "Není co odeslat."
         )
+
         return
 
     print()
@@ -994,10 +1481,13 @@ def main():
         print(
             "Telegram: odesláno."
         )
+
     else:
         print(
-            "Telegram: odeslání selhalo."
+            "Telegram: "
+            "odeslání selhalo."
         )
+
         sys.exit(1)
 
 
