@@ -14,31 +14,13 @@ print()
 for event in events:
     print(f"Název: {event.name}")
     print(f"Datum a čas: {event.start_at}")
+    print(f"Místo: {event.venue_name}")
+    print(f"Adresa: {event.address}")
+    print(f"Město: {event.city}")
     print(f"Cena: {event.price} {event.currency}")
+    print(f"Vstupenky: {event.tickets_url}")
+    print(f"Obrázků: {len(event.image_urls)}")
+    print(f"První obrázek: {event.image_urls[0] if event.image_urls else None}")
     print(f"Schedule ID: {event.schedule_id}")
     print(f"Event ID: {event.event_id}")
-    print(f"URL: {event.url}")
     print("-" * 50)
-print("\n--- CAVEMAN DETAIL ---")
-
-for schedule in data["schedules"]:
-    if schedule["id"] == 9567679:
-        print("\nSCHEDULE:")
-        print(schedule)
-
-for event in data["included"]["events"]:
-    if event["id"] == 3419763:
-        print("\nEVENT:")
-        print(event)
-
-print("\nVENUES:")
-for venue in data["included"]["venues"]:
-    print(venue)
-
-print("\nSALES:")
-for sale in data["included"]["sales"]:
-    print(sale)
-
-print("\nIMAGES:")
-for image in data["included"]["images"]:
-    print(image)
