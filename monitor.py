@@ -2,8 +2,11 @@ import os
 import json
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+print("================================")
+print("YouTube Monitor")
+print("================================")
 
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -11,6 +14,23 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 CONFIG_FILE = "config.json"
 STATE_FILE = "data/seen_videos.json"
+
+MAX_AGE_DAYS = 2
+
+
+def load_json(filename, default):
+    if not os.path.exists(filename):
+        return default
+
+    with open(filename, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_json(filename, data):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def youtube_search(keyword):
@@ -20,317 +40,133 @@ def youtube_search(keyword):
         "type": "video",
         "maxResults": 50,
         "order": "date",
-        "key": YOUTUBE_API_KEY,
+        "key": YOUTUBE_API_KEY
     }
 
-    url = (
-        "https://www.googleapis.com/youtube/v3/search?"
-        + urllib.parse.urlencode(params)
-    )
+    url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
 
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "YT-Michopulos-Monitor",
-        },
-    )
-
-    with urllib.request.urlopen(request) as response:
-        return json.load(response)
+    with urllib.request.urlopen(url) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
-def send_telegram_message(text):
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    data = urllib.parse.urlencode(
-        {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-        }
-    ).encode("utf-8")
+    data = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }).encode("utf-8")
 
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-    )
+    request = urllib.request.Request(url, data=data, method="POST")
 
     with urllib.request.urlopen(request) as response:
-        return json.load(response)
+        response.read()
 
 
-def load_config():
-    with open(
-        CONFIG_FILE,
-        "r",
-        encoding="utf-8",
-    ) as file:
-        return json.load(file)
+config = load_json(CONFIG_FILE, {
+    "keywords": [],
+    "exclude_channels": {}
+})
 
+state = load_json(STATE_FILE, {
+    "seen_video_ids": [],
+    "initialized_keywords": [],
+    "last_checked_at": None
+})
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {
-            "seen_video_ids": [],
-            "initialized_keywords": [],
-            "last_checked_at": None,
-        }
+seen_video_ids = set(state.get("seen_video_ids", []))
+initialized_keywords = set(state.get("initialized_keywords", []))
 
-    with open(
-        STATE_FILE,
-        "r",
-        encoding="utf-8",
-    ) as file:
-        state = json.load(file)
+new_videos = []
 
-    if "seen_video_ids" not in state:
-        state["seen_video_ids"] = []
+now = datetime.now(timezone.utc)
+minimum_date = now - timedelta(days=MAX_AGE_DAYS)
 
-    if "initialized_keywords" not in state:
-        state["initialized_keywords"] = []
+for keyword in config.get("keywords", []):
+    print(f"Kontroluji: {keyword}")
 
-    return state
-
-
-def save_state(state):
-    os.makedirs(
-        os.path.dirname(STATE_FILE),
-        exist_ok=True,
+    excluded_channels = set(
+        config.get("exclude_channels", {}).get(keyword, [])
     )
 
-    with open(
-        STATE_FILE,
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            state,
-            file,
-            ensure_ascii=False,
-            indent=2,
-        )
+    try:
+        results = youtube_search(keyword)
+    except Exception as e:
+        print(f"Chyba při hledání '{keyword}': {e}")
+        continue
 
+    current_video_ids = []
 
-def get_video_url(video_id):
-    return (
-        f"https://www.youtube.com/watch?v={video_id}"
-    )
+    for item in results.get("items", []):
+        video_id = item["id"]["videoId"]
+        snippet = item["snippet"]
 
+        channel_id = snippet["channelId"]
+        channel_title = snippet["channelTitle"]
+        title = snippet["title"]
+        published_at = snippet["publishedAt"]
 
-def main():
-    print("================================")
-    print("YouTube Monitor")
-    print("================================")
-
-    config = load_config()
-    state = load_state()
-
-    keywords = config.get(
-        "keywords",
-        [],
-    )
-
-    exclude_channels = config.get(
-        "exclude_channels",
-        {},
-    )
-
-    seen_video_ids = set(
-        state.get(
-            "seen_video_ids",
-            [],
-        )
-    )
-
-    initialized_keywords = set(
-        state.get(
-            "initialized_keywords",
-            [],
-        )
-    )
-
-    if not keywords:
-        print(
-            "Není nastaveno žádné klíčové slovo."
-        )
-
-        return
-
-    new_videos = []
-
-    for keyword in keywords:
-
-        print(
-            f"Kontroluji: {keyword}"
-        )
-
-        try:
-            result = youtube_search(
-                keyword
-            )
-
-        except Exception as error:
-
-            print(
-                f"Chyba při hledání "
-                f"'{keyword}': {error}"
-            )
-
+        if channel_id in excluded_channels:
+            print(f"Ignoruji vyloučený kanál: {channel_title}")
             continue
 
-        excluded_ids = set(
-            exclude_channels.get(
-                keyword,
-                [],
-            )
+        published_date = datetime.fromisoformat(
+            published_at.replace("Z", "+00:00")
         )
 
-        current_video_ids = []
+        if published_date < minimum_date:
+            continue
 
-        for item in result.get(
-            "items",
-            [],
-        ):
-
-            video_id = item.get(
-                "id",
-                {},
-            ).get(
-                "videoId"
-            )
-
-            snippet = item.get(
-                "snippet",
-                {},
-            )
-
-            if not video_id:
-                continue
-
-            channel_id = snippet.get(
-                "channelId",
-                "",
-            )
-
-            channel_title = snippet.get(
-                "channelTitle",
-                "",
-            )
-
-            title = snippet.get(
-                "title",
-                "",
-            )
-
-            if channel_id in excluded_ids:
-
-                print(
-                    f"Ignoruji vyloučený kanál: "
-                    f"{channel_title}"
-                )
-
-                continue
-
-            current_video_ids.append(
-                video_id
-            )
-
-            if keyword not in initialized_keywords:
-                continue
-
-            if video_id in seen_video_ids:
-                continue
-
-            new_videos.append(
-                {
-                    "video_id": video_id,
-                    "keyword": keyword,
-                    "title": title,
-                    "channel_title": channel_title,
-                }
-            )
+        current_video_ids.append(video_id)
 
         if keyword not in initialized_keywords:
+            continue
 
-            print(
-                f"První kontrola '{keyword}': "
-                f"ukládám "
-                f"{len(current_video_ids)} "
-                "videí jako základ."
-            )
+        if video_id not in seen_video_ids:
+            new_videos.append({
+                "video_id": video_id,
+                "keyword": keyword,
+                "channel_title": channel_title,
+                "title": title,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "published_at": published_at
+            })
 
-            initialized_keywords.add(
-                keyword
-            )
-
-        for video_id in current_video_ids:
-            seen_video_ids.add(
-                video_id
-            )
-
-    print(
-        f"Nových videí: {len(new_videos)}"
-    )
-
-    for video in new_videos:
-
-        message = (
-            "🎬 Nové video na YouTube\n\n"
-            f"🔎 {video['keyword']}\n"
-            f"📺 {video['channel_title']}\n"
-            f"📝 {video['title']}\n\n"
-            f"{get_video_url(video['video_id'])}"
+    if keyword not in initialized_keywords:
+        print(
+            f"První kontrola '{keyword}': "
+            f"ukládám {len(current_video_ids)} videí jako základ."
         )
 
-        try:
+        initialized_keywords.add(keyword)
 
-            send_telegram_message(
-                message
-            )
+    seen_video_ids.update(current_video_ids)
 
-            print(
-                f"Odesláno: "
-                f"{video['title']}"
-            )
 
-        except Exception as error:
+new_videos.sort(key=lambda x: x["published_at"])
 
-            print(
-                f"Chyba při odesílání "
-                f"Telegramu: {error}"
-            )
+print(f"Nových videí: {len(new_videos)}")
 
-    updated_seen_ids = list(
-        seen_video_ids
+for video in new_videos:
+    message = (
+        "🎬 Nové video na YouTube\n\n"
+        f"🔎 {video['keyword']}\n"
+        f"📺 {video['channel_title']}\n"
+        f"📝 {video['title']}\n\n"
+        f"{video['url']}"
     )
 
-    if len(updated_seen_ids) > 500:
-
-        updated_seen_ids = (
-            updated_seen_ids[-500:]
-        )
-
-    state = {
-        "seen_video_ids": updated_seen_ids,
-        "initialized_keywords": sorted(
-            initialized_keywords
-        ),
-        "last_checked_at": (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        ),
-    }
-
-    save_state(state)
-
-    print(
-        "Kontrola dokončena."
-    )
+    try:
+        send_telegram(message)
+        print(f"Odesláno: {video['title']}")
+    except Exception as e:
+        print(f"Chyba při odesílání na Telegram: {e}")
 
 
-if __name__ == "__main__":
-    main()
+state["seen_video_ids"] = list(seen_video_ids)[-500:]
+state["initialized_keywords"] = list(initialized_keywords)
+state["last_checked_at"] = now.isoformat()
+
+save_json(STATE_FILE, state)
+
+print("Kontrola dokončena.")
