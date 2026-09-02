@@ -76,7 +76,7 @@ def send_telegram(message):
         response.read()
 
 
-def is_david_svoboda_video(title, description):
+def check_david_svoboda(title, description):
     text = f"{title} {description}".lower()
 
     relevant_words = [
@@ -85,6 +85,7 @@ def is_david_svoboda_video(title, description):
         "ukrajinu",
         "ukrajinsk",
         "ukrajinista",
+        "ukrajin",
         "ukrajinc",
         "rusko",
         "rusk",
@@ -119,20 +120,29 @@ def is_david_svoboda_video(title, description):
         "mistrovství"
     ]
 
-    has_relevant_topic = any(
-        word in text for word in relevant_words
+    matched_relevant = [
+        word for word in relevant_words
+        if word in text
+    ]
+
+    matched_sport = [
+        word for word in sport_words
+        if word in title.lower()
+    ]
+
+    if matched_sport:
+        return False, (
+            "SPORT "
+            + ", ".join(matched_sport)
+        )
+
+    if not matched_relevant:
+        return False, "bez tématu Ukrajina/Rusko"
+
+    return True, (
+        "relevantní: "
+        + ", ".join(matched_relevant)
     )
-
-    title_lower = title.lower()
-
-    title_is_sport = any(
-        word in title_lower for word in sport_words
-    )
-
-    if title_is_sport:
-        return False
-
-    return has_relevant_topic
 
 
 config = load_json(CONFIG_FILE, {
@@ -165,7 +175,10 @@ minimum_date = now - timedelta(
 
 for keyword in config.get("keywords", []):
 
+    print("")
+    print("--------------------------------")
     print(f"Kontroluji: {keyword}")
+    print("--------------------------------")
 
     excluded_channels = set(
         config.get("exclude_channels", {}).get(keyword, [])
@@ -180,9 +193,15 @@ for keyword in config.get("keywords", []):
         )
         continue
 
+    items = results.get("items", [])
+
+    print(
+        f"YouTube vrátilo výsledků: {len(items)}"
+    )
+
     current_video_ids = []
 
-    for item in results.get("items", []):
+    for item in items:
 
         video_id = item["id"]["videoId"]
         snippet = item["snippet"]
@@ -193,56 +212,91 @@ for keyword in config.get("keywords", []):
         description = snippet.get("description", "")
         published_at = snippet["publishedAt"]
 
-        if channel_id in excluded_channels:
-
-            print(
-                f"Ignoruji vyloučený kanál: "
-                f"{channel_title}"
-            )
-
-            continue
-
         published_date = datetime.fromisoformat(
             published_at.replace("Z", "+00:00")
         )
 
+        print("")
+        print(f"VIDEO: {title}")
+        print(f"KANÁL: {channel_title}")
+        print(f"DATUM: {published_at}")
+
+        if channel_id in excluded_channels:
+
+            print("❌ VYŘAZENO: vyloučený kanál")
+
+            continue
+
         if published_date < minimum_date:
+
+            print(
+                f"❌ VYŘAZENO: starší než "
+                f"{MAX_AGE_DAYS} dny"
+            )
+
             continue
 
         if keyword == "David Svoboda":
 
-            if not is_david_svoboda_video(
+            relevant, reason = check_david_svoboda(
                 title,
                 description
-            ):
+            )
+
+            if not relevant:
+
                 print(
-                    f"Ignoruji nerelevantní video: "
-                    f"{title}"
+                    f"❌ VYŘAZENO: {reason}"
                 )
+
                 continue
+
+            print(
+                f"✅ RELEVANTNÍ: {reason}"
+            )
+
+        else:
+
+            print("✅ RELEVANTNÍ")
 
         current_video_ids.append(video_id)
 
         if keyword not in initialized_keywords:
+
+            print(
+                "ℹ️ Pouze základ – "
+                "video nebude odesláno."
+            )
+
             continue
 
-        if video_id not in seen_video_ids:
+        if video_id in seen_video_ids:
 
-            new_videos.append({
-                "video_id": video_id,
-                "keyword": keyword,
-                "channel_title": channel_title,
-                "title": title,
-                "url": (
-                    "https://www.youtube.com/watch?v="
-                    + video_id
-                ),
-                "published_at": published_at
-            })
+            print(
+                "ℹ️ Už bylo zaznamenáno."
+            )
 
+            continue
+
+        print(
+            "🆕 NOVÉ VIDEO – bude odesláno na Telegram."
+        )
+
+        new_videos.append({
+            "video_id": video_id,
+            "keyword": keyword,
+            "channel_title": channel_title,
+            "title": title,
+            "url": (
+                "https://www.youtube.com/watch?v="
+                + video_id
+            ),
+            "published_at": published_at
+        })
 
     if keyword not in initialized_keywords:
 
+        print("")
         print(
             f"První kontrola '{keyword}': "
             f"ukládám {len(current_video_ids)} "
@@ -258,9 +312,10 @@ new_videos.sort(
     key=lambda x: x["published_at"]
 )
 
-print(
-    f"Nových videí: {len(new_videos)}"
-)
+print("")
+print("================================")
+print(f"Nových videí: {len(new_videos)}")
+print("================================")
 
 
 for video in new_videos:
@@ -278,7 +333,7 @@ for video in new_videos:
         send_telegram(message)
 
         print(
-            f"Odesláno: {video['title']}"
+            f"📨 Odesláno: {video['title']}"
         )
 
     except Exception as e:
@@ -303,4 +358,5 @@ save_json(
     state
 )
 
+print("")
 print("Kontrola dokončena.")
