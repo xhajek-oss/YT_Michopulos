@@ -82,25 +82,6 @@ def parse_dynamo_matches():
 
     matches = []
 
-    months = {
-        "ledna": 1,
-        "února": 2,
-        "března": 3,
-        "dubna": 4,
-        "května": 5,
-        "června": 6,
-        "července": 7,
-        "srpna": 8,
-        "září": 9,
-        "října": 10,
-        "listopadu": 11,
-        "prosince": 12,
-    }
-
-    # Základní parser pro současnou strukturu stránky.
-    # Pokud web změní strukturu, funkce raději vrátí prázdný výsledek
-    # než aby vytvořila chybná data.
-
     import re
 
     pattern = re.compile(
@@ -298,9 +279,12 @@ def get_sport_events():
         try:
             dynamo_events = parse_dynamo_matches()
             events.extend(dynamo_events)
+
             print(
-                f"Dynamo: nalezeno {len(dynamo_events)} zápasů"
+                f"Dynamo: nalezeno "
+                f"{len(dynamo_events)} zápasů"
             )
+
         except Exception as e:
             print(f"Dynamo ERROR: {e}")
 
@@ -371,6 +355,7 @@ def format_event(event):
         message += (
             f"\n📺 {event['tv_channel']}"
         )
+
     else:
         message += (
             "\n📺 TV kanál: "
@@ -423,11 +408,7 @@ def make_weekly_message(events, monday):
     )
 
     if not week_events:
-        return (
-            "📅 SPORT – PŘEHLED TÝDNE\n\n"
-            "Tento týden nebyla nalezena "
-            "žádná sledovaná sportovní událost."
-        )
+        return None
 
     message = "📅 SPORT – PŘEHLED TÝDNE\n\n"
 
@@ -486,8 +467,6 @@ def main():
         state.get("sent_weekly", [])
     )
 
-    # Tento skript zatím očekává parametr:
-    # daily nebo weekly.
     import sys
 
     if len(sys.argv) < 2:
@@ -522,17 +501,20 @@ def main():
                 "sportovní událost."
             )
 
-            sent_daily.add(today_key)
-
-        else:
-            send_telegram(message)
-
             print(
-                "Denní sportovní upozornění "
-                "odesláno."
+                "Telegram se neposílá."
             )
 
-            sent_daily.add(today_key)
+            return
+
+        send_telegram(message)
+
+        print(
+            "Denní sportovní upozornění "
+            "odesláno."
+        )
+
+        sent_daily.add(today_key)
 
     elif mode == "weekly":
         monday = now - timedelta(
@@ -554,6 +536,18 @@ def main():
             events,
             monday,
         )
+
+        if message is None:
+            print(
+                "Tento týden není žádná "
+                "sledovaná sportovní událost."
+            )
+
+            print(
+                "Telegram se neposílá."
+            )
+
+            return
 
         send_telegram(message)
 
