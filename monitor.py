@@ -27,7 +27,10 @@ def load_json(filename, default):
 
 
 def save_json(filename, data):
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    directory = os.path.dirname(filename)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
 
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -43,24 +46,93 @@ def youtube_search(keyword):
         "key": YOUTUBE_API_KEY
     }
 
-    url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
+    url = (
+        "https://www.googleapis.com/youtube/v3/search?"
+        + urllib.parse.urlencode(params)
+    )
 
     with urllib.request.urlopen(url) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
 
     data = urllib.parse.urlencode({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }).encode("utf-8")
 
-    request = urllib.request.Request(url, data=data, method="POST")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST"
+    )
 
     with urllib.request.urlopen(request) as response:
         response.read()
+
+
+def is_david_svoboda_video(title, description):
+    text = f"{title} {description}".lower()
+
+    relevant_words = [
+        "ukrajina",
+        "ukrajině",
+        "ukrajinu",
+        "ukrajinsk",
+        "ukrajinista",
+        "ukrajinc",
+        "rusko",
+        "rusk",
+        "putin",
+        "zelensky",
+        "zelenskyj",
+        "válka",
+        "invaze",
+        "krym",
+        "donbas",
+        "kyjev",
+        "kyjiv",
+        "ukrajinsko-rusk"
+    ]
+
+    sport_words = [
+        "fotbal",
+        "football",
+        "hokej",
+        "tenis",
+        "atletika",
+        "atlet",
+        "olympiáda",
+        "olympi",
+        "sportovec",
+        "reprezentace",
+        "liga",
+        "gól",
+        "gol",
+        "trenér",
+        "zápas",
+        "mistrovství"
+    ]
+
+    has_relevant_topic = any(
+        word in text for word in relevant_words
+    )
+
+    title_lower = title.lower()
+
+    title_is_sport = any(
+        word in title_lower for word in sport_words
+    )
+
+    if title_is_sport:
+        return False
+
+    return has_relevant_topic
 
 
 config = load_json(CONFIG_FILE, {
@@ -74,15 +146,25 @@ state = load_json(STATE_FILE, {
     "last_checked_at": None
 })
 
-seen_video_ids = set(state.get("seen_video_ids", []))
-initialized_keywords = set(state.get("initialized_keywords", []))
+seen_video_ids = set(
+    state.get("seen_video_ids", [])
+)
+
+initialized_keywords = set(
+    state.get("initialized_keywords", [])
+)
 
 new_videos = []
 
 now = datetime.now(timezone.utc)
-minimum_date = now - timedelta(days=MAX_AGE_DAYS)
+
+minimum_date = now - timedelta(
+    days=MAX_AGE_DAYS
+)
+
 
 for keyword in config.get("keywords", []):
+
     print(f"Kontroluji: {keyword}")
 
     excluded_channels = set(
@@ -91,23 +173,33 @@ for keyword in config.get("keywords", []):
 
     try:
         results = youtube_search(keyword)
+
     except Exception as e:
-        print(f"Chyba při hledání '{keyword}': {e}")
+        print(
+            f"Chyba při hledání '{keyword}': {e}"
+        )
         continue
 
     current_video_ids = []
 
     for item in results.get("items", []):
+
         video_id = item["id"]["videoId"]
         snippet = item["snippet"]
 
         channel_id = snippet["channelId"]
         channel_title = snippet["channelTitle"]
         title = snippet["title"]
+        description = snippet.get("description", "")
         published_at = snippet["publishedAt"]
 
         if channel_id in excluded_channels:
-            print(f"Ignoruji vyloučený kanál: {channel_title}")
+
+            print(
+                f"Ignoruji vyloučený kanál: "
+                f"{channel_title}"
+            )
+
             continue
 
         published_date = datetime.fromisoformat(
@@ -117,25 +209,44 @@ for keyword in config.get("keywords", []):
         if published_date < minimum_date:
             continue
 
+        if keyword == "David Svoboda":
+
+            if not is_david_svoboda_video(
+                title,
+                description
+            ):
+                print(
+                    f"Ignoruji nerelevantní video: "
+                    f"{title}"
+                )
+                continue
+
         current_video_ids.append(video_id)
 
         if keyword not in initialized_keywords:
             continue
 
         if video_id not in seen_video_ids:
+
             new_videos.append({
                 "video_id": video_id,
                 "keyword": keyword,
                 "channel_title": channel_title,
                 "title": title,
-                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "url": (
+                    "https://www.youtube.com/watch?v="
+                    + video_id
+                ),
                 "published_at": published_at
             })
 
+
     if keyword not in initialized_keywords:
+
         print(
             f"První kontrola '{keyword}': "
-            f"ukládám {len(current_video_ids)} videí jako základ."
+            f"ukládám {len(current_video_ids)} "
+            f"videí jako základ."
         )
 
         initialized_keywords.add(keyword)
@@ -143,11 +254,17 @@ for keyword in config.get("keywords", []):
     seen_video_ids.update(current_video_ids)
 
 
-new_videos.sort(key=lambda x: x["published_at"])
+new_videos.sort(
+    key=lambda x: x["published_at"]
+)
 
-print(f"Nových videí: {len(new_videos)}")
+print(
+    f"Nových videí: {len(new_videos)}"
+)
+
 
 for video in new_videos:
+
     message = (
         "🎬 Nové video na YouTube\n\n"
         f"🔎 {video['keyword']}\n"
@@ -157,16 +274,33 @@ for video in new_videos:
     )
 
     try:
+
         send_telegram(message)
-        print(f"Odesláno: {video['title']}")
+
+        print(
+            f"Odesláno: {video['title']}"
+        )
+
     except Exception as e:
-        print(f"Chyba při odesílání na Telegram: {e}")
+
+        print(
+            f"Chyba při odesílání na Telegram: {e}"
+        )
 
 
-state["seen_video_ids"] = list(seen_video_ids)[-500:]
-state["initialized_keywords"] = list(initialized_keywords)
+state["seen_video_ids"] = list(
+    seen_video_ids
+)[-500:]
+
+state["initialized_keywords"] = list(
+    initialized_keywords
+)
+
 state["last_checked_at"] = now.isoformat()
 
-save_json(STATE_FILE, state)
+save_json(
+    STATE_FILE,
+    state
+)
 
 print("Kontrola dokončena.")
