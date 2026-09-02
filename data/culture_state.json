@@ -1,12 +1,14 @@
 {
   "initialized": true,
-  "signatures": {
-    "c33ad14b1ca04b09": "de37535e582d989da176d419955e9420ee2ea384aef1fd5a98843c9a53a8b106",
-    "2ea2785a98434e57": "92893eb69ed5fe515344181891f913e5f47f1a5641335fcec3493623f1559e65",
-    "9cd0decd6f857db0": "491e0c09c49e97c78b6762ae609a52ffcb989b623dddfed4c41460a501a1e258",
-    "06e91396be15b463": "cabc0a508761aaae8c77c04bd9872d27faaa53d7ea6ee243b8aac7c6c70c7856",
-    "1de056415aad7c2d": "7120395d84ccf76909d882f292c915a0844a88d2ac599dc47e0b8de51c08fd5f",
-    "8a5a11f5a53ecbe9": "c5fb403d99ec0b2b3aeff970f4435512d223f70cd0011e28c31311e83fe0b8ad"
-  },
-  "last_run": "2026-09-02T18:05:45.357489"
+  "signatures": {},
+  "last_run": "2026-09-02T18:05:45.357489",
+  "goout_schedule_ids": [
+    "9326242",
+    "9427604",
+    "9502302",
+    "9504639",
+    "9552058",
+    "9567679"
+  ],
+  "goout_initialized": true
 }
