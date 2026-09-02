@@ -1,0 +1,12 @@
+{
+  "venues": [
+    {
+      "name": "KD Hronovická Pardubice",
+      "sources": {
+        "smsticket": "https://www.smsticket.cz/mista/2033-kd-hronovicka-pardubice",
+        "ticketportal": "https://www.ticketportal.cz/venue/KD-Hronovicka-Hronovicka-406-Pardubice",
+        "goout": "https://goout.net/cs/kulturni-dum-hronovicka/vzeofe/"
+      }
+    }
+  ]
+}
