@@ -1,12 +1,16 @@
 {
   "keywords": [
     "Michopulos",
-    "David Svoboda"
+    "David Svoboda",
+    "Arpád Soltész"
   ],
   "exclude_channels": {
     "Michopulos": [
       "UCDlviqJwAFEmcDKTivZIm3g"
     ],
-    "David Svoboda": []
+    "David Svoboda": [],
+    "Arpád Soltész": [
+      "UC5zY50gn7Z0-yGSt74dRZXw"
+    ]
   }
 }
