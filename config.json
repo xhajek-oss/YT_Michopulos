@@ -1,11 +1,12 @@
 {
   "keywords": [
     "Michopulos",
-    "David Svoboda"
+    "David Svoboda ukrajinista"
   ],
   "exclude_channels": {
     "Michopulos": [
       "UCDlviqJwAFEmcDKTivZIm3g"
-    ]
+    ],
+    "David Svoboda ukrajinista": []
   }
 }
