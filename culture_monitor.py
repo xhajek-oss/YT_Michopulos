@@ -31,10 +31,16 @@ def load_state():
         return {
             "initialized": False,
             "signatures": {},
+            "goout_schedule_ids": [],
         }
 
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        state = json.load(f)
+
+    # Kompatibilita se starším state souborem
+    state.setdefault("goout_schedule_ids", [])
+
+    return state
 
 
 def save_state(state):
@@ -100,14 +106,10 @@ def parse_smsticket(url):
     events = []
 
     # --------------------------------------------------------
-    # TADY ZŮSTÁVÁ TVŮJ STÁVAJÍCÍ SMS TICKET PARSER
+    # PŮVODNÍ SMS TICKET PARSER
     # --------------------------------------------------------
     #
-    # Pokud už ve svém původním souboru tuto funkci máš,
-    # ponechávám její původní tělo.
-    #
-    # V případě, že máš v původním souboru jiný parser,
-    # nepřepisuj ho tímto blokem.
+    # TADY JE POTŘEBA PONECHAT TVŮJ PŮVODNÍ KÓD PRO SMS TICKET.
     #
     # --------------------------------------------------------
 
@@ -137,11 +139,10 @@ def parse_ticketportal(url):
     events = []
 
     # --------------------------------------------------------
-    # TADY ZŮSTÁVÁ TVŮJ STÁVAJÍCÍ TICKETPORTAL PARSER
+    # PŮVODNÍ TICKETPORTAL PARSER
     # --------------------------------------------------------
     #
-    # Stejně jako u SMS Ticketu:
-    # ponecháme původní funkci z tvého souboru.
+    # TADY JE POTŘEBA PONECHAT TVŮJ PŮVODNÍ KÓD PRO TICKETPORTAL.
     #
     # --------------------------------------------------------
 
@@ -154,29 +155,34 @@ def parse_ticketportal(url):
 
 def parse_goout(venue_id):
     """
-    Načte akce z GoOut API a převede je do stejného formátu,
-    který používá zbytek culture_monitor.py.
+    Načte akce z GoOut API.
 
-    Nepotřebujeme všechny informace z GoOutu.
-    Pro monitor nám stačí:
+    Pro monitor používáme pouze:
+      - schedule ID
       - název
       - datum
       - čas
-      - ID
-      - zdroj
       - URL
+      - zdroj
+
+    Cenu a dostupnost nepotřebujeme.
     """
 
     print(f"GoOut: načítám API pro venue {venue_id}")
 
     try:
         client = GoOutClient()
-        data = client.get_venue_schedules(venue_id)
+
+        data = client.get_venue_schedules(
+            venue_id
+        )
 
         parsed_events = parse_events(data)
 
     except Exception as e:
-        print(f"GoOut: chyba při načítání: {e}")
+        print(
+            f"GoOut: chyba při načítání: {e}"
+        )
         return []
 
     events = []
@@ -184,6 +190,9 @@ def parse_goout(venue_id):
     for event in parsed_events:
 
         if not event.start_at:
+            continue
+
+        if not event.schedule_id:
             continue
 
         date = event.start_at.date().isoformat()
@@ -196,11 +205,8 @@ def parse_goout(venue_id):
 
         events.append(
             {
-                "id": make_id(
-                    event.name,
-                    date,
-                    time,
-                ),
+                "id": f"goout:{event.schedule_id}",
+                "schedule_id": str(event.schedule_id),
                 "title": event.name,
                 "date": date,
                 "time": time,
@@ -211,9 +217,85 @@ def parse_goout(venue_id):
             }
         )
 
-    print(f"GoOut: nalezeno {len(events)} akcí")
+    print(
+        f"GoOut: nalezeno {len(events)} akcí"
+    )
 
     return events
+
+
+def check_goout_new_events(events, state):
+    """
+    Zjistí, jestli se na GoOutu objevila nová akce.
+
+    Používáme GoOut schedule_id.
+
+    První spuštění:
+        aktuální akce se pouze uloží jako základ.
+
+    Další spuštění:
+        vrátí pouze nové schedule ID.
+    """
+
+    old_ids = {
+        str(x)
+        for x in state.get(
+            "goout_schedule_ids",
+            []
+        )
+    }
+
+    current_ids = {
+        str(event["schedule_id"])
+        for event in events
+    }
+
+    # --------------------------------------------------------
+    # PRVNÍ GOOUT SPUŠTĚNÍ
+    # --------------------------------------------------------
+
+    if not state.get(
+        "goout_initialized",
+        False,
+    ):
+
+        state["goout_initialized"] = True
+
+        state["goout_schedule_ids"] = sorted(
+            current_ids
+        )
+
+        print(
+            "GoOut: první kontrola – "
+            "aktuální akce byly uloženy "
+            "jako základ."
+        )
+
+        return []
+
+    # --------------------------------------------------------
+    # DALŠÍ SPUŠTĚNÍ
+    # --------------------------------------------------------
+
+    new_events = []
+
+    for event in events:
+
+        schedule_id = str(
+            event["schedule_id"]
+        )
+
+        if schedule_id not in old_ids:
+            new_events.append(event)
+
+    # Přidáme nové ID do historie
+    all_ids = old_ids | current_ids
+
+    state["goout_schedule_ids"] = sorted(
+        all_ids
+    )
+
+    return new_events
 
 
 # ============================================================
@@ -226,7 +308,9 @@ def merge_events(events):
     for event in events:
 
         key = (
-            normalize_text(event.get("title")),
+            normalize_text(
+                event.get("title")
+            ),
             event.get("date"),
             event.get("time"),
         )
@@ -237,29 +321,70 @@ def merge_events(events):
 
         existing = merged[key]
 
-        # zdroje
-        existing_sources = set(existing.get("sources", []))
-        new_sources = set(event.get("sources", []))
+        # ----------------------------------------------------
+        # ZDROJE
+        # ----------------------------------------------------
+
+        existing_sources = set(
+            existing.get(
+                "sources",
+                []
+            )
+        )
+
+        new_sources = set(
+            event.get(
+                "sources",
+                []
+            )
+        )
 
         existing["sources"] = sorted(
             existing_sources | new_sources
         )
 
+        # ----------------------------------------------------
         # URL
-        existing_urls = set(existing.get("urls", []))
-        new_urls = set(event.get("urls", []))
+        # ----------------------------------------------------
+
+        existing_urls = set(
+            existing.get(
+                "urls",
+                []
+            )
+        )
+
+        new_urls = set(
+            event.get(
+                "urls",
+                []
+            )
+        )
 
         existing["urls"] = sorted(
             existing_urls | new_urls
         )
 
-        # Cena
-        if existing.get("price") is None:
-            existing["price"] = event.get("price")
+        # ----------------------------------------------------
+        # CENA
+        # ----------------------------------------------------
 
-        # Dostupnost
-        if existing.get("availability") is None:
-            existing["availability"] = event.get("availability")
+        if existing.get("price") is None:
+            existing["price"] = event.get(
+                "price"
+            )
+
+        # ----------------------------------------------------
+        # DOSTUPNOST
+        # ----------------------------------------------------
+
+        if existing.get(
+            "availability"
+        ) is None:
+
+            existing["availability"] = event.get(
+                "availability"
+            )
 
     result = []
 
@@ -288,8 +413,15 @@ def merge_events(events):
 # TELEGRAM
 # ============================================================
 
-def send_telegram_message(token, chat_id, message):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+def send_telegram_message(
+    token,
+    chat_id,
+    message,
+):
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{token}/sendMessage"
+    )
 
     try:
         response = requests.post(
@@ -304,31 +436,47 @@ def send_telegram_message(token, chat_id, message):
 
         response.raise_for_status()
 
-        print("Telegram: zpráva odeslána")
+        print(
+            "Telegram: zpráva odeslána"
+        )
 
     except requests.RequestException as e:
-        print(f"Telegram: chyba při odesílání: {e}")
+        print(
+            f"Telegram: chyba při odesílání: {e}"
+        )
 
 
 def format_event(event):
     lines = []
 
-    lines.append(f"<b>{event['title']}</b>")
     lines.append(
-        f"{event.get('date', '')} {event.get('time', '')}"
+        f"<b>{event['title']}</b>"
     )
 
-    sources = event.get("sources", [])
+    lines.append(
+        f"{event.get('date', '')} "
+        f"{event.get('time', '')}"
+    )
+
+    sources = event.get(
+        "sources",
+        []
+    )
 
     if sources:
         lines.append(
             f"Zdroj: {', '.join(sources)}"
         )
 
-    urls = event.get("urls", [])
+    urls = event.get(
+        "urls",
+        []
+    )
 
     if urls:
-        lines.append(urls[0])
+        lines.append(
+            urls[0]
+        )
 
     return "\n".join(lines)
 
@@ -348,79 +496,150 @@ def main():
 
     all_events = []
 
-    # --------------------------------------------------------
+    # GoOut nové akce budeme držet odděleně
+    goout_new_events = []
+
+    # ========================================================
     # VENUES
-    # --------------------------------------------------------
+    # ========================================================
 
-    for venue in config.get("venues", []):
+    for venue in config.get(
+        "venues",
+        []
+    ):
 
-        venue_name = venue.get("name", "Neznámé místo")
-        sources = venue.get("sources", {})
+        venue_name = venue.get(
+            "name",
+            "Neznámé místo",
+        )
+
+        sources = venue.get(
+            "sources",
+            {}
+        )
 
         print()
-        print(f"Místo: {venue_name}")
+        print(
+            f"Místo: {venue_name}"
+        )
         print("-" * 60)
 
-        # ----------------------------------------------------
+        # ====================================================
         # SMS TICKET
-        # ----------------------------------------------------
+        # ====================================================
 
-        smsticket_url = sources.get("smsticket")
+        smsticket_url = sources.get(
+            "smsticket"
+        )
 
         if smsticket_url:
+
             smsticket_events = parse_smsticket(
                 smsticket_url
             )
 
-            all_events.extend(smsticket_events)
+            all_events.extend(
+                smsticket_events
+            )
 
-        # ----------------------------------------------------
+        # ====================================================
         # TICKETPORTAL
-        # ----------------------------------------------------
+        # ====================================================
 
-        ticketportal_url = sources.get("ticketportal")
+        ticketportal_url = sources.get(
+            "ticketportal"
+        )
 
         if ticketportal_url:
+
             ticketportal_events = parse_ticketportal(
                 ticketportal_url
             )
 
-            all_events.extend(ticketportal_events)
+            all_events.extend(
+                ticketportal_events
+            )
 
-        # ----------------------------------------------------
+        # ====================================================
         # GOOUT
-        # ----------------------------------------------------
+        # ====================================================
 
-        goout_url = sources.get("goout")
+        goout_url = sources.get(
+            "goout"
+        )
 
         if goout_url:
 
-            # Aktuální ID Kulturního domu Hronovická na GoOutu.
+            # API ID pro:
+            # Kulturní dům Hronovická
             #
-            # Veřejná URL je v configu výše, ale API používá
-            # numerické ID venue.
+            # GoOut veřejná URL:
+            # /kulturni-dum-hronovicka/vzeofe/
+            #
+            # API venue ID:
+            # 65979
+
             goout_venue_id = 65979
 
             goout_events = parse_goout(
                 goout_venue_id
             )
 
-            all_events.extend(goout_events)
+            goout_new_events = check_goout_new_events(
+                goout_events,
+                state,
+            )
 
-    # --------------------------------------------------------
-    # MERGE
-    # --------------------------------------------------------
+    # ========================================================
+    # MERGE SMS + TICKETPORTAL
+    # ========================================================
 
-    all_events = merge_events(all_events)
+    all_events = merge_events(
+        all_events
+    )
 
     print()
-    print(f"Celkem akcí po sloučení: {len(all_events)}")
+    print(
+        f"Celkem akcí po sloučení: "
+        f"{len(all_events)}"
+    )
 
-    # --------------------------------------------------------
-    # POROVNÁNÍ SE STAVEM
-    # --------------------------------------------------------
+    # ========================================================
+    # GOOUT VÝSLEDEK
+    # ========================================================
 
-    old_signatures = state.get("signatures", {})
+    print()
+
+    if goout_new_events:
+
+        print(
+            f"GoOut: nové akce: "
+            f"{len(goout_new_events)}"
+        )
+
+        for event in goout_new_events:
+
+            print(
+                f"  + "
+                f"{event['date']} "
+                f"{event['time']} "
+                f"{event['title']}"
+            )
+
+    else:
+
+        print(
+            "GoOut: nové akce: 0"
+        )
+
+    # ========================================================
+    # POROVNÁNÍ SMS + TICKETPORTAL SE STAVEM
+    # ========================================================
+
+    old_signatures = state.get(
+        "signatures",
+        {}
+    )
 
     new_signatures = {}
 
@@ -430,71 +649,129 @@ def main():
     for event in all_events:
 
         event_id = event["id"]
-        signature = make_signature(event)
 
-        new_signatures[event_id] = signature
+        signature = make_signature(
+            event
+        )
+
+        new_signatures[event_id] = (
+            signature
+        )
 
         if event_id not in old_signatures:
-            new_events.append(event)
 
-        elif old_signatures[event_id] != signature:
-            changed_events.append(event)
+            new_events.append(
+                event
+            )
 
-    # --------------------------------------------------------
-    # VÝPIS
-    # --------------------------------------------------------
+        elif (
+            old_signatures[event_id]
+            != signature
+        ):
+
+            changed_events.append(
+                event
+            )
+
+    # ========================================================
+    # VÝPIS NOVÝCH AKCÍ
+    # ========================================================
 
     print()
 
     if new_events:
-        print(f"Nové akce: {len(new_events)}")
+
+        print(
+            f"Nové akce: "
+            f"{len(new_events)}"
+        )
 
         for event in new_events:
+
             print(
-                f"  + {event['date']} "
+                f"  + "
+                f"{event['date']} "
                 f"{event['time']} "
                 f"{event['title']}"
             )
 
     else:
-        print("Nové akce: 0")
+
+        print(
+            "Nové akce: 0"
+        )
+
+    # ========================================================
+    # VÝPIS ZMĚN
+    # ========================================================
 
     if changed_events:
+
         print(
-            f"Změněné akce: {len(changed_events)}"
+            f"Změněné akce: "
+            f"{len(changed_events)}"
         )
 
         for event in changed_events:
+
             print(
-                f"  ~ {event['date']} "
+                f"  ~ "
+                f"{event['date']} "
                 f"{event['time']} "
                 f"{event['title']}"
             )
 
     else:
-        print("Změněné akce: 0")
 
-    # --------------------------------------------------------
+        print(
+            "Změněné akce: 0"
+        )
+
+    # ========================================================
     # TELEGRAM
-    # --------------------------------------------------------
+    # ========================================================
 
-    telegram = config.get("telegram", {})
+    telegram = config.get(
+        "telegram",
+        {}
+    )
 
-    telegram_token = telegram.get("bot_token")
-    telegram_chat_id = telegram.get("chat_id")
+    telegram_token = telegram.get(
+        "bot_token"
+    )
 
-    if state.get("initialized", False):
+    telegram_chat_id = telegram.get(
+        "chat_id"
+    )
 
-        notifications = new_events + changed_events
+    # ========================================================
+    # NOTIFIKACE
+    # ========================================================
+
+    if state.get(
+        "initialized",
+        False
+    ):
+
+        notifications = (
+            new_events
+            + changed_events
+            + goout_new_events
+        )
 
         if notifications:
 
-            if telegram_token and telegram_chat_id:
+            if (
+                telegram_token
+                and telegram_chat_id
+            ):
 
                 for event in notifications:
 
                     message = (
-                        "🎭 <b>Nová / změněná akce</b>\n\n"
+                        "🎭 "
+                        "<b>Nová / změněná akce</b>"
+                        "\n\n"
                         + format_event(event)
                     )
 
@@ -505,27 +782,39 @@ def main():
                     )
 
             else:
+
                 print(
-                    "Telegram není nakonfigurován."
+                    "Telegram není "
+                    "nakonfigurován."
                 )
 
     else:
+
         print()
         print(
-            "První spuštění – stav byl pouze uložen."
+            "První spuštění – "
+            "stav byl pouze uložen."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # ULOŽENÍ STAVU
-    # --------------------------------------------------------
+    # ========================================================
 
     state["initialized"] = True
-    state["signatures"] = new_signatures
 
-    save_state(state)
+    state["signatures"] = (
+        new_signatures
+    )
+
+    save_state(
+        state
+    )
 
     print()
-    print("Stav uložen.")
+    print(
+        "Stav uložen."
+    )
+
     print("=" * 60)
 
 
