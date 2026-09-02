@@ -1,0 +1,186 @@
+{
+  "initialized": true,
+  "signatures": {
+    "02714912cac923d1": {
+      "signature": "7523ab1e29f9d1efd5bdcfe186188da78120b87457a75fd28aa7810c5cf806bd",
+      "event": {
+        "id": "02714912cac923d1",
+        "title": "Více informací",
+        "date": "2026-10-15",
+        "time": "19:00",
+        "price": "490 Kč",
+        "availability": "V prodeji",
+        "sources": [
+          "SMS Ticket"
+        ],
+        "urls": [
+          "https://www.smsticket.cz/vstupenky/67010-jiri-charvat-komik-ktery-neexistuje-kd-hronovicka-pardubice"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954871"
+    },
+    "c13d46119d220b04": {
+      "signature": "64abde678842a54e4808a0a4378d30d9088b614b1d185182c47d414c3c1a53ff",
+      "event": {
+        "id": "c13d46119d220b04",
+        "title": "Štístko a Poupěnka ...A KDE JE POUPĚNKA?",
+        "date": "2026-10-04",
+        "time": "15:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12005807"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954900"
+    },
+    "0b0e985eb02569a2": {
+      "signature": "8914e7a51739a9d52a8404dfb0f6ca428f4fcc4fc16dafb61df4a70d2112bda0",
+      "event": {
+        "id": "0b0e985eb02569a2",
+        "title": "TECHTLE MECHTLE - HALÓ, TADY MÁMA!",
+        "date": "2026-10-07",
+        "time": "16:30",
+        "price": null,
+        "availability": "Vyprodáno",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12005757"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954913"
+    },
+    "832400064f99d3ff": {
+      "signature": "ef5964e6a54e293fe6b5fe46dae4fb27320856c55e2de535ad9622b372ef9595",
+      "event": {
+        "id": "832400064f99d3ff",
+        "title": "TECHTLE MECHTLE - HALÓ, TADY MÁMA!",
+        "date": "2026-10-07",
+        "time": "20:00",
+        "price": null,
+        "availability": "Vyprodáno",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12005757"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954921"
+    },
+    "831e3699315da3ef": {
+      "signature": "2d9dd720e2c6bf43e5aa8097263f0da892017c39d0b76ef76551ee39eec2ef81",
+      "event": {
+        "id": "831e3699315da3ef",
+        "title": "Představení pro seniory - Kamelie",
+        "date": "2026-10-22",
+        "time": "16:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/15682800"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954930"
+    },
+    "7e61a14da9daeb36": {
+      "signature": "c8a4c6aa7ca9c9b7ed645be8c907f304d32e6dce7c34d001fe8d07f115c27e48",
+      "event": {
+        "id": "7e61a14da9daeb36",
+        "title": "ETC 50 let",
+        "date": "2026-11-08",
+        "time": "19:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12006289"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954941"
+    },
+    "41495f7498ca579d": {
+      "signature": "9c534a3a764e2119697e3c31e6cfc813f7fb86f2534fad0f85ffe1df24033481",
+      "event": {
+        "id": "41495f7498ca579d",
+        "title": "Karel Plíhal - recitál",
+        "date": "2026-11-18",
+        "time": "19:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12001389"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954949"
+    },
+    "780aa1b994dfe0cb": {
+      "signature": "5a841f973ac56c83ac5120d40dd88f7a336332b3b5be6496affcf722d35db348",
+      "event": {
+        "id": "780aa1b994dfe0cb",
+        "title": "OSMANY SHOW",
+        "date": "2027-01-21",
+        "time": "19:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/12004066"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954955"
+    },
+    "ab10078ae59f3b9d": {
+      "signature": "e4e20875e1dfdc43d28f30f08dfaae3929225dfbfad74a181c1fa249e184907e",
+      "event": {
+        "id": "ab10078ae59f3b9d",
+        "title": "CAVEMAN",
+        "date": "2027-01-28",
+        "time": "19:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/154075"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954962"
+    },
+    "11b6d994e9743040": {
+      "signature": "48daf910b0b68346440338faabcd1cd40d36db0e3ce942d3f80951cb4b8c587b",
+      "event": {
+        "id": "11b6d994e9743040",
+        "title": "Vím, že víš, že vím",
+        "date": "2027-02-07",
+        "time": "19:00",
+        "price": null,
+        "availability": "V prodeji",
+        "sources": [
+          "Ticketportal"
+        ],
+        "urls": [
+          "https://www.ticketportal.cz/Event/-194971"
+        ]
+      },
+      "updated_at": "2026-09-02T17:48:34.954969"
+    }
+  },
+  "last_run": "2026-09-02T17:48:34.954971"
+}
