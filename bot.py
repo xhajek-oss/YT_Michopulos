@@ -1,15 +1,20 @@
+```python
 import os
 import json
 import base64
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 GH_TOKEN = os.environ["GH_TOKEN"]
+YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
+
 
 CONFIG_FILE = "config.json"
+STATE_FILE = "data/seen_videos.json"
 
 GITHUB_REPO = "xhajek-oss/YT_Michopulos"
 GITHUB_BRANCH = "main"
@@ -111,12 +116,7 @@ def save_config_to_github(config, sha):
     )
 
 
-def get_keywords(config):
-    return config.get("keywords", [])
-
-
 def handle_command(text):
-
     parts = text.strip().split(maxsplit=2)
 
     if not parts:
@@ -141,7 +141,7 @@ def handle_command(text):
 
     config, sha = load_config_from_github()
 
-    keywords = get_keywords(config)
+    keywords = config.get("keywords", [])
 
     if action == "seznam":
 
@@ -220,12 +220,12 @@ def handle_command(text):
 
         exclude_channels = config.get(
             "exclude_channels",
-            {}
+            {},
         )
 
         exclude_channels.pop(
             keyword,
-            None
+            None,
         )
 
         config["exclude_channels"] = exclude_channels
@@ -250,15 +250,12 @@ def handle_command(text):
     )
 
 
-def main():
-
-    print("YouTube Telegram bot - jednorázová kontrola.")
+def process_telegram_updates():
+    print("Kontroluji Telegram...")
 
     data = {
         "timeout": 0,
-        "allowed_updates": json.dumps(
-            ["message"]
-        ),
+        "allowed_updates": json.dumps(["message"]),
     }
 
     updates = telegram_request(
@@ -268,7 +265,7 @@ def main():
 
     updates_list = updates.get(
         "result",
-        []
+        [],
     )
 
     print(
@@ -288,9 +285,7 @@ def main():
         ):
             last_update_id = update_id
 
-        message = update.get(
-            "message"
-        )
+        message = update.get("message")
 
         if not message:
             continue
@@ -299,35 +294,30 @@ def main():
             message["chat"]["id"]
         )
 
-        if chat_id != str(
-            TELEGRAM_CHAT_ID
-        ):
+        if chat_id != str(TELEGRAM_CHAT_ID):
             continue
 
         text = message.get(
             "text",
-            ""
+            "",
         )
 
         if not text.startswith("/yt"):
             continue
 
         try:
-
             handle_command(text)
 
-        except Exception as e:
-
+        except Exception as error:
             print(
-                f"Chyba při zpracování příkazu: {e}"
+                f"Chyba při zpracování příkazu: "
+                f"{error}"
             )
 
             send_message(
-                "❌ Nastala chyba při "
-                "zpracování příkazu."
+                "❌ Nastala chyba při zpracování příkazu."
             )
 
-    # Potvrdíme Telegramu zpracování všech nalezených update.
     if last_update_id is not None:
 
         telegram_request(
@@ -335,14 +325,248 @@ def main():
             {
                 "offset": last_update_id + 1,
                 "timeout": 0,
-                "allowed_updates": json.dumps(
-                    ["message"]
-                ),
+                "allowed_updates": json.dumps(["message"]),
             },
         )
 
     print("Telegram kontrola dokončena.")
 
 
+def youtube_search(keyword):
+    params = {
+        "part": "snippet",
+        "q": keyword,
+        "type": "video",
+        "maxResults": 50,
+        "order": "date",
+        "key": YOUTUBE_API_KEY,
+    }
+
+    url = (
+        "https://www.googleapis.com/youtube/v3/search?"
+        + urllib.parse.urlencode(params)
+    )
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "YT-Michopulos-Monitor",
+        },
+    )
+
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "seen_video_ids": [],
+            "last_checked_at": None,
+        }
+
+    with open(
+        STATE_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        return json.load(file)
+
+
+def save_state(state):
+    os.makedirs(
+        os.path.dirname(STATE_FILE),
+        exist_ok=True,
+    )
+
+    with open(
+        STATE_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            state,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def check_youtube():
+    print("Kontroluji YouTube...")
+
+    config = load_config_from_github()[0]
+    state = load_state()
+
+    keywords = config.get(
+        "keywords",
+        [],
+    )
+
+    exclude_channels = config.get(
+        "exclude_channels",
+        {},
+    )
+
+    seen_video_ids = state.get(
+        "seen_video_ids",
+        [],
+    )
+
+    first_run = len(seen_video_ids) == 0
+
+    all_seen_ids = set(seen_video_ids)
+    new_videos = []
+
+    for keyword in keywords:
+
+        print(
+            f"Kontroluji: {keyword}"
+        )
+
+        try:
+            result = youtube_search(keyword)
+
+        except Exception as error:
+            print(
+                f"Chyba při hledání '{keyword}': "
+                f"{error}"
+            )
+            continue
+
+        excluded_ids = set(
+            exclude_channels.get(
+                keyword,
+                [],
+            )
+        )
+
+        for item in result.get(
+            "items",
+            [],
+        ):
+
+            video_id = item.get(
+                "id",
+                {},
+            ).get(
+                "videoId"
+            )
+
+            snippet = item.get(
+                "snippet",
+                {},
+            )
+
+            if not video_id:
+                continue
+
+            channel_id = snippet.get(
+                "channelId",
+                "",
+            )
+
+            if channel_id in excluded_ids:
+                continue
+
+            if video_id in all_seen_ids:
+                continue
+
+            new_videos.append(
+                {
+                    "video_id": video_id,
+                    "keyword": keyword,
+                    "title": snippet.get(
+                        "title",
+                        "",
+                    ),
+                    "channel_title": snippet.get(
+                        "channelTitle",
+                        "",
+                    ),
+                    "published_at": snippet.get(
+                        "publishedAt",
+                        "",
+                    ),
+                }
+            )
+
+            all_seen_ids.add(video_id)
+
+    if first_run:
+
+        print(
+            "První spuštění - pouze ukládám "
+            "nalezená videa jako základ."
+        )
+
+    else:
+
+        print(
+            f"Nových videí: {len(new_videos)}"
+        )
+
+        for video in new_videos:
+
+            message = (
+                "🎬 Nové video na YouTube\n\n"
+                f"🔎 Hledání: {video['keyword']}\n"
+                f"📺 Kanál: {video['channel_title']}\n"
+                f"📝 {video['title']}\n\n"
+                f"https://www.youtube.com/watch?v="
+                f"{video['video_id']}"
+            )
+
+            try:
+                send_message(message)
+
+            except Exception as error:
+                print(
+                    f"Chyba při Telegram notifikaci: "
+                    f"{error}"
+                )
+
+    updated_seen_ids = list(all_seen_ids)
+
+    if len(updated_seen_ids) > 500:
+        updated_seen_ids = updated_seen_ids[-500:]
+
+    save_state(
+        {
+            "seen_video_ids": updated_seen_ids,
+            "last_checked_at": (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            ),
+        }
+    )
+
+    print("YouTube kontrola dokončena.")
+
+
+def main():
+    print("================================")
+    print("YT Michopulos - jednorázový běh")
+    print("================================")
+
+    try:
+        process_telegram_updates()
+    except Exception as error:
+        print(
+            f"Telegram chyba: {error}"
+        )
+
+    try:
+        check_youtube()
+    except Exception as error:
+        print(
+            f"YouTube chyba: {error}"
+        )
+
+    print("Běh dokončen.")
+
+
 if __name__ == "__main__":
     main()
+```
