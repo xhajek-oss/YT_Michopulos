@@ -1,7 +1,16 @@
-name: YouTube Monitor
+name: YouTube and Sport Monitor
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Režim spuštění"
+        required: true
+        default: "daily"
+        type: choice
+        options:
+          - daily
+          - weekly
 
 permissions:
   contents: write
@@ -19,9 +28,9 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install requests
+      - name: Install dependencies
         run: |
-          python -m pip install requests
+          python -m pip install requests beautifulsoup4
 
       - name: Run YouTube monitor
         env:
@@ -31,16 +40,23 @@ jobs:
         run: |
           python monitor.py
 
+      - name: Run Sport monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python sport_monitor.py ${{ inputs.mode }}
+
       - name: Save state
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add data/seen_videos.json
+          git add data/seen_videos.json data/sport_state.json
 
           if git diff --cached --quiet; then
             echo "No state changes."
           else
-            git commit -m "Update YouTube monitor state"
+            git commit -m "Update monitor state"
             git push
           fi
