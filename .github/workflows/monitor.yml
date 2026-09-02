@@ -1,42 +1,48 @@
 name: YouTube Monitor
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 permissions:
-  contents: write
+contents: write
 
 jobs:
-  monitor:
-    runs-on: ubuntu-latest
+monitor:
+runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+```
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+  - name: Setup Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.x"
 
-      - name: Run YouTube monitor
-        env:
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python monitor.py
+  - name: Install dependencies
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install requests
 
-      - name: Save state
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+  - name: Run YouTube monitor
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    run: |
+      python monitor.py
 
-          git add data/seen_videos.json
+  - name: Save state
+    run: |
+      git config user.name "github-actions"
+      git config user.email "github-actions@github.com"
 
-          if git diff --cached --quiet; then
-            echo "No state changes."
-          else
-            git commit -m "Update YouTube monitor state"
-            git push
-          fi
+      git add data/seen_videos.json
+
+      if git diff --cached --quiet; then
+        echo "No state changes."
+      else
+        git commit -m "Update YouTube monitor state"
+        git push
+      fi
