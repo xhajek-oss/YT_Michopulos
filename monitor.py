@@ -76,7 +76,8 @@ def send_telegram(message):
         response.read()
 
 
-def check_david_svoboda(title, description):
+def is_david_svoboda_video(title, description):
+    title_lower = title.lower()
     text = f"{title} {description}".lower()
 
     relevant_words = [
@@ -98,10 +99,28 @@ def check_david_svoboda(title, description):
         "donbas",
         "kyjev",
         "kyjiv",
-        "ukrajinsko-rusk"
+        "bander",
+        "petljur",
+        "upa"
     ]
 
-    sport_words = [
+    identity_words = [
+        "ukrajinista",
+        "historik",
+        "historie",
+        "historikem",
+        "historika",
+        "ukrajiny",
+        "ukrajins"
+    ]
+
+    wrong_person_words = [
+        "advokát",
+        "advokacie",
+        "právník",
+        "právní",
+        "soudce",
+        "soud",
         "fotbal",
         "football",
         "hokej",
@@ -117,7 +136,9 @@ def check_david_svoboda(title, description):
         "gol",
         "trenér",
         "zápas",
-        "mistrovství"
+        "mistrovství",
+        "pětiboji",
+        "pětiboj"
     ]
 
     matched_relevant = [
@@ -125,24 +146,76 @@ def check_david_svoboda(title, description):
         if word in text
     ]
 
-    matched_sport = [
-        word for word in sport_words
-        if word in title.lower()
+    matched_identity = [
+        word for word in identity_words
+        if word in text
     ]
 
-    if matched_sport:
+    matched_wrong_person = [
+        word for word in wrong_person_words
+        if word in title_lower
+    ]
+
+    if matched_wrong_person:
         return False, (
-            "SPORT "
-            + ", ".join(matched_sport)
+            "jiný David Svoboda: "
+            + ", ".join(matched_wrong_person)
         )
 
     if not matched_relevant:
         return False, "bez tématu Ukrajina/Rusko"
 
+    if not matched_identity:
+        return False, (
+            "chybí označení historik/ukrajinista"
+        )
+
     return True, (
         "relevantní: "
         + ", ".join(matched_relevant)
     )
+
+
+def get_david_svoboda_results():
+    search_queries = [
+        "David Svoboda Ukrajina",
+        "David Svoboda ukrajinista",
+        "David Svoboda historik"
+    ]
+
+    all_results = {}
+
+    for search_query in search_queries:
+
+        print("")
+        print(
+            f"Hledám Davida Svobodu přes: "
+            f"{search_query}"
+        )
+
+        try:
+            results = youtube_search(search_query)
+
+        except Exception as e:
+            print(
+                f"Chyba při hledání "
+                f"'{search_query}': {e}"
+            )
+            continue
+
+        print(
+            f"Výsledků: "
+            f"{len(results.get('items', []))}"
+        )
+
+        for item in results.get("items", []):
+
+            video_id = item["id"]["videoId"]
+
+            if video_id not in all_results:
+                all_results[video_id] = item
+
+    return list(all_results.values())
 
 
 config = load_json(CONFIG_FILE, {
@@ -184,20 +257,28 @@ for keyword in config.get("keywords", []):
         config.get("exclude_channels", {}).get(keyword, [])
     )
 
-    try:
-        results = youtube_search(keyword)
+    if keyword == "David Svoboda":
 
-    except Exception as e:
+        items = get_david_svoboda_results()
+
+        print("")
         print(
-            f"Chyba při hledání '{keyword}': {e}"
+            f"Celkem unikátních výsledků: "
+            f"{len(items)}"
         )
-        continue
 
-    items = results.get("items", [])
+    else:
 
-    print(
-        f"YouTube vrátilo výsledků: {len(items)}"
-    )
+        try:
+            results = youtube_search(keyword)
+            items = results.get("items", [])
+
+        except Exception as e:
+            print(
+                f"Chyba při hledání "
+                f"'{keyword}': {e}"
+            )
+            continue
 
     current_video_ids = []
 
@@ -223,7 +304,9 @@ for keyword in config.get("keywords", []):
 
         if channel_id in excluded_channels:
 
-            print("❌ VYŘAZENO: vyloučený kanál")
+            print(
+                "❌ VYŘAZENO: vyloučený kanál"
+            )
 
             continue
 
@@ -238,7 +321,7 @@ for keyword in config.get("keywords", []):
 
         if keyword == "David Svoboda":
 
-            relevant, reason = check_david_svoboda(
+            relevant, reason = is_david_svoboda_video(
                 title,
                 description
             )
@@ -279,7 +362,8 @@ for keyword in config.get("keywords", []):
             continue
 
         print(
-            "🆕 NOVÉ VIDEO – bude odesláno na Telegram."
+            "🆕 NOVÉ VIDEO – "
+            "bude odesláno na Telegram."
         )
 
         new_videos.append({
