@@ -6,11 +6,11 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import quote_plus, urljoin, urlparse
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import yaml
 from bs4 import BeautifulSoup, Tag
+from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
 from models.tv_program import TVProgram
 
@@ -57,22 +57,55 @@ class IdnesTVScraper:
         self.max_pages_per_query = int(config.get("max_pages_per_query", 5))
         self.timeout = timeout
         self.now = now.astimezone(self.tz) if now else datetime.now(self.tz)
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+
+    def _ensure_browser(self) -> BrowserContext:
+        if self._context is not None:
+            return self._context
+        self._playwright = sync_playwright().start()
+        self._browser = self._playwright.chromium.launch(headless=True)
+        self._context = self._browser.new_context(
+            locale="cs-CZ",
+            timezone_id=self.tz_name,
+            viewport={"width": 1280, "height": 900},
+        )
+        return self._context
+
+    def _close_browser(self) -> None:
+        if self._context is not None:
+            self._context.close()
+            self._context = None
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+        if self._playwright is not None:
+            self._playwright.stop()
+            self._playwright = None
 
     def _fetch_html(self, url: str) -> str:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-                ),
-                "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.7",
-            },
-        )
-        with urlopen(request, timeout=self.timeout) as response:
-            raw = response.read()
-            charset = response.headers.get_content_charset() or "windows-1250"
-        return raw.decode(charset, errors="replace")
+        context = self._ensure_browser()
+        page = context.new_page()
+        try:
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.timeout * 1000,
+            )
+            if response is not None and response.status >= 400:
+                raise RuntimeError(f"iDNES HTTP {response.status} for {url}")
+
+            # Discovery proved that programme links are present in the rendered DOM.
+            # Do not require them here: a genuinely empty search page is still valid and
+            # is diagnosed by _scrape_query below.
+            try:
+                page.wait_for_selector('a[href*=".id"]', timeout=min(self.timeout, 10) * 1000)
+            except Exception:
+                pass
+            return page.content()
+        finally:
+            page.close()
 
     @staticmethod
     def _source_id(url: str) -> Optional[str]:
@@ -248,30 +281,33 @@ class IdnesTVScraper:
         programs: list[TVProgram] = []
         seen: set[tuple[str, datetime, str]] = set()
 
-        for query in self.search_queries:
-            for item in self._scrape_query(query):
-                channel = self.channels[item.channel_slug]
-                start_utc = item.start_local.astimezone(timezone.utc)
-                end_utc = item.end_local.astimezone(timezone.utc)
-                key = (item.source_id, start_utc, channel)
-                if key in seen:
-                    continue
-                seen.add(key)
-                programs.append(
-                    TVProgram(
-                        source=self.source,
-                        source_id=item.source_id,
-                        channel=channel,
-                        title=item.title,
-                        description=item.description,
-                        start_datetime=start_utc,
-                        end_datetime=end_utc,
-                        source_url=item.source_url,
-                        discovered_at=discovered_at,
-                        timezone=self.tz_name,
-                        distribution="tv",
+        try:
+            for query in self.search_queries:
+                for item in self._scrape_query(query):
+                    channel = self.channels[item.channel_slug]
+                    start_utc = item.start_local.astimezone(timezone.utc)
+                    end_utc = item.end_local.astimezone(timezone.utc)
+                    key = (item.source_id, start_utc, channel)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    programs.append(
+                        TVProgram(
+                            source=self.source,
+                            source_id=item.source_id,
+                            channel=channel,
+                            title=item.title,
+                            description=item.description,
+                            start_datetime=start_utc,
+                            end_datetime=end_utc,
+                            source_url=item.source_url,
+                            discovered_at=discovered_at,
+                            timezone=self.tz_name,
+                            distribution="tv",
+                        )
                     )
-                )
+        finally:
+            self._close_browser()
 
         programs.sort(key=lambda p: (p.start_datetime, p.channel, p.title))
         return programs
