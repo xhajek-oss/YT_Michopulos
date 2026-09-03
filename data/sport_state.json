@@ -1,8 +1,14 @@
 {
-  "sent_daily": [
-    "2026-09-02"
-  ],
-  "sent_weekly": [
-    "2026-08-31"
+  "last_run": "2026-09-03T13:43:54.639697+02:00",
+  "mode": "daily",
+  "events": [
+    {
+      "date": "2026-09-03T18:00:00+02:00",
+      "sport": "hokej",
+      "home": "HC Dynamo Pardubice",
+      "away": "GKS Tychy",
+      "competition": "Liga Mistrů",
+      "tv_confirmed": false
+    }
   ]
 }
