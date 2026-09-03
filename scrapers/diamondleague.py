@@ -413,6 +413,45 @@ class DiamondLeagueScraper(BaseScraper):
                             payload = json.loads(raw.decode("utf-8"))
                         except Exception:
                             return
+
+                        # Final targeted diagnostic: print only the schedule JSON
+                        # structure/content, capped so GitHub Actions logs stay usable.
+                        if "_SCHEDULE_JSON.json" in url.upper():
+                            try:
+                                print(
+                                    f"[DL-SCHEDULE] url={url} "
+                                    f"type={type(payload).__name__}"
+                                )
+                                if isinstance(payload, dict):
+                                    print(
+                                        "[DL-SCHEDULE] top_keys="
+                                        + repr(list(payload.keys())[:50])
+                                    )
+                                elif isinstance(payload, list):
+                                    print(
+                                        f"[DL-SCHEDULE] list_length={len(payload)}"
+                                    )
+
+                                pretty = json.dumps(
+                                    payload,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                )
+                                max_chars = 30000
+                                print(
+                                    "[DL-SCHEDULE] payload="
+                                    + pretty[:max_chars]
+                                )
+                                if len(pretty) > max_chars:
+                                    print(
+                                        f"[DL-SCHEDULE] payload truncated "
+                                        f"({len(pretty)} chars total)"
+                                    )
+                            except Exception as exc:
+                                print(
+                                    f"[DL-SCHEDULE] diagnostic failed: {exc}"
+                                )
+
                         payloads.append(payload)
                         response_urls.append(url)
 
