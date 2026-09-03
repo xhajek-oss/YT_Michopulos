@@ -2,21 +2,45 @@ import os
 import sys
 import json
 import re
-from datetime import datetime, timedelta
+import html
+import unicodedata
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import quote_plus
 
 import requests
 from bs4 import BeautifulSoup
 
 
 # ============================================================
-# KONFIGURACE
+# SPORT MONITOR
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TIMEZONE = ZoneInfo("Europe/Prague")
 
 DYNAMO_URL = "https://www.hcdynamo.cz/matches/MUZ"
+CHL_TV_URL = "https://www.chl.hockey/en/fans/chl-games-on-tv"
+ONEPLAY_SPORT_URL = "https://www.oneplay.cz/sport"
+HOKEJ_CZ_URL = "https://www.hokej.cz/klub/hc-dynamo-pardubice/12/zapasy"
+
+STATE_FILE = "data/sport_state.json"
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+REQUEST_TIMEOUT = 20
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/128.0 Safari/537.36"
+    )
+}
+
+
+# ============================================================
+# KONFIGURACE
+# ============================================================
 
 CONFIG = {
     "dynamo_pardubice": True,
@@ -25,423 +49,1201 @@ CONFIG = {
     "world_hockey_championship": False,
 }
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
-    )
-}
-
-TIMEZONE = ZoneInfo("Europe/Prague")
-REQUEST_TIMEOUT = 20
-
-STATE_FILE = "data/sport_state.json"
-
 
 # ============================================================
-# POMOCNÉ FUNKCE
+# HTTP
 # ============================================================
 
-def get_now():
-    return datetime.now(TIMEZONE)
+session = requests.Session()
+session.headers.update(HEADERS)
 
 
-def clean_text(text):
-    if not text:
-        return ""
-
-    text = text.replace("\xa0", " ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def fetch_html(url):
+def get_url(url, params=None):
     try:
-        response = requests.get(
+        response = session.get(
             url,
-            headers=HEADERS,
+            params=params,
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
         return response.text
+    except Exception as exc:
+        print(f"HTTP chyba: {url}")
+        print(f"  {exc}")
+        return None
 
-    except requests.RequestException as exc:
-        print(f"Chyba při načítání {url}: {exc}")
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
+
+def normalize_text(value):
+    if value is None:
         return ""
 
+    value = html.unescape(str(value))
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(
+        char for char in value
+        if not unicodedata.combining(char)
+    )
 
-def parse_czech_datetime(text):
+    value = value.lower()
+    value = value.replace("–", "-")
+    value = value.replace("—", "-")
+    value = value.replace("−", "-")
+
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
+
+
+def compact_text(value):
+    return re.sub(r"[^a-z0-9]+", "", normalize_text(value))
+
+
+def contains_alias(text, aliases):
+    normalized = normalize_text(text)
+
+    for alias in aliases:
+        alias_normalized = normalize_text(alias)
+
+        if alias_normalized and alias_normalized in normalized:
+            return True
+
+    return False
+
+
+def unique_list(items):
+    result = []
+
+    for item in items:
+        if item and item not in result:
+            result.append(item)
+
+    return result
+
+
+# ============================================================
+# TEAM ALIASES
+# ============================================================
+
+TEAM_ALIASES = {
+    "HC Dynamo Pardubice": [
+        "HC Dynamo Pardubice",
+        "Dynamo Pardubice",
+        "Dynamo",
+        "Pardubice",
+    ],
+
+    "GKS Tychy": [
+        "GKS Tychy",
+        "Tychy",
+    ],
+
+    "Rögle BK": [
+        "Rögle BK",
+        "Rogle BK",
+        "Rögle",
+        "Rogle",
+    ],
+
+    "Mountfield HK": [
+        "Mountfield HK",
+        "Mountfield",
+        "Hradec Kralove",
+        "Hradec Králové",
+    ],
+
+    "HC VERVA Litvínov": [
+        "HC VERVA Litvínov",
+        "Litvínov",
+        "Verva Litvínov",
+    ],
+
+    "HC Energie Karlovy Vary": [
+        "HC Energie Karlovy Vary",
+        "Karlovy Vary",
+    ],
+
+    "Bílí Tygři Liberec": [
+        "Bílí Tygři Liberec",
+        "Bili Tygri Liberec",
+        "Liberec",
+    ],
+
+    "HC Kometa Brno": [
+        "HC Kometa Brno",
+        "Kometa Brno",
+        "Brno",
+    ],
+
+    "BK Mladá Boleslav": [
+        "BK Mladá Boleslav",
+        "Mladá Boleslav",
+        "Mlada Boleslav",
+    ],
+
+    "Banes Motor České Budějovice": [
+        "Banes Motor České Budějovice",
+        "Motor České Budějovice",
+        "České Budějovice",
+        "Ceske Budejovice",
+    ],
+
+    "SaiPa Lappeenranta": [
+        "SaiPa Lappeenranta",
+        "SaiPa",
+        "Lappeenranta",
+    ],
+
+    "KooKoo Kouvola": [
+        "KooKoo Kouvola",
+        "KooKoo",
+        "Kouvola",
+    ],
+
+    "Växjö Lakers": [
+        "Växjö Lakers",
+        "Vaxjo Lakers",
+        "Växjö",
+        "Vaxjo",
+    ],
+
+    "Red Bull München": [
+        "Red Bull München",
+        "Red Bull Munchen",
+        "Red Bull Munich",
+        "Munich",
+        "München",
+    ],
+
+    "Vlci Žilina": [
+        "Vlci Žilina",
+        "Vlci Zilina",
+        "Žilina",
+        "Zilina",
+    ],
+}
+
+
+# ============================================================
+# COMPETITION
+# ============================================================
+
+COMPETITION_MAP = {
+    "liga mistrů": "Liga mistrů",
+    "liga mistru": "Liga mistrů",
+    "champions hockey league": "Liga mistrů",
+    "champions hockey": "Liga mistrů",
+    "chl": "Liga mistrů",
+
+    "tipsport extraliga": "Tipsport extraliga",
+    "tipsport extraliga ledního hokeje": "Tipsport extraliga",
+    "telh": "Tipsport extraliga",
+    "extraliga": "Tipsport extraliga",
+
+    "diamond league": "Diamond League",
+    "diamantová liga": "Diamond League",
+    "diamantova liga": "Diamond League",
+
+    "biatlon": "Biatlon",
+    "biathlon": "Biatlon",
+
+    "mistrovství světa": "Mistrovství světa",
+    "mistrovstvi sveta": "Mistrovství světa",
+
+    "mistrovství evropy": "Mistrovství Evropy",
+    "mistrovstvi evropy": "Mistrovství Evropy",
+}
+
+
+def normalize_competition(value):
+    normalized = normalize_text(value)
+
+    for key, result in COMPETITION_MAP.items():
+        if key in normalized:
+            return result
+
+    return value.strip() if value else "Neznámá soutěž"
+
+
+# ============================================================
+# DATE PARSING
+# ============================================================
+
+CZECH_MONTHS = {
+    "ledna": 1,
+    "února": 2,
+    "brezna": 3,
+    "března": 3,
+    "dubna": 4,
+    "května": 5,
+    "kvetna": 5,
+    "června": 6,
+    "cervna": 6,
+    "července": 7,
+    "cervence": 7,
+    "srpna": 8,
+    "září": 9,
+    "rijna": 10,
+    "října": 10,
+    "listopadu": 11,
+    "prosince": 12,
+}
+
+
+def parse_date_time(text, default_year=None):
     if not text:
         return None
 
-    text = clean_text(text)
+    text = normalize_text(text)
 
-    pattern = re.compile(
-        r"(?:po|út|ut|st|čt|ct|pá|pa|so|ne)?\s*"
-        r"(\d{1,2})\.\s*"
-        r"(\d{1,2})\.\s*"
-        r"(\d{4})"
-        r"(?:\s*,)?\s*"
-        r"(\d{1,2}):(\d{2})",
-        re.IGNORECASE,
+    # 3. 9. 2026 18:00
+    match = re.search(
+        r"\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})"
+        r"(?:[^\d]+(\d{1,2}):(\d{2}))?",
+        text,
     )
 
-    match = pattern.search(text)
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year = int(match.group(3))
 
-    if not match:
-        return None
+        hour = int(match.group(4) or 0)
+        minute = int(match.group(5) or 0)
 
-    day, month, year, hour, minute = map(
-        int,
-        match.groups(),
+        try:
+            return datetime(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                tzinfo=TIMEZONE,
+            )
+        except ValueError:
+            return None
+
+    # 03.09.2026 18:00
+    match = re.search(
+        r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})"
+        r"(?:[^\d]+(\d{1,2}):(\d{2}))?",
+        text,
     )
 
-    try:
-        return datetime(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            tzinfo=TIMEZONE,
-        )
-    except ValueError:
-        return None
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year = int(match.group(3))
 
+        hour = int(match.group(4) or 0)
+        minute = int(match.group(5) or 0)
 
-def normalize_team_name(name):
-    if not name:
-        return ""
+        try:
+            return datetime(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                tzinfo=TIMEZONE,
+            )
+        except ValueError:
+            return None
 
-    name = clean_text(name)
-
-    name = re.sub(
-        r"^(?:Image:\s*)?Logo\s+",
-        "",
-        name,
-        flags=re.IGNORECASE,
+    # 3. září 2026 18:00
+    match = re.search(
+        r"\b(\d{1,2})\.\s*"
+        r"(ledna|února|brezna|března|dubna|května|kvetna|"
+        r"června|cervna|července|cervence|srpna|září|rijna|října|"
+        r"listopadu|prosince)"
+        r"(?:\s+(\d{4}))?"
+        r"(?:[^\d]+(\d{1,2}):(\d{2}))?",
+        text,
     )
 
-    name = re.sub(
-        r"^Image:\s*",
-        "",
-        name,
-        flags=re.IGNORECASE,
-    )
+    if match:
+        day = int(match.group(1))
+        month_name = match.group(2)
+        year = int(match.group(3) or default_year or datetime.now(TIMEZONE).year)
 
-    return clean_text(name)
+        month = CZECH_MONTHS.get(month_name)
+
+        if month:
+            hour = int(match.group(4) or 0)
+            minute = int(match.group(5) or 0)
+
+            try:
+                return datetime(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    tzinfo=TIMEZONE,
+                )
+            except ValueError:
+                return None
+
+    return None
 
 
 # ============================================================
-# SOUTĚŽ
+# EVENT
 # ============================================================
 
-def detect_competition(container):
+def make_event(
+    event_date,
+    home,
+    away,
+    competition,
+    sport="hokej",
+):
+    competition = normalize_competition(competition)
+
+    return {
+        "date": event_date.isoformat(),
+        "home": home.strip(),
+        "away": away.strip(),
+        "competition": competition,
+        "sport": sport,
+
+        "tv_confirmed": False,
+        "tv_channels": [],
+        "tv_sources": [],
+
+        "tv_checked": False,
+    }
+
+
+def event_key(event):
+    return (
+        event.get("date", ""),
+        normalize_text(event.get("home", "")),
+        normalize_text(event.get("away", "")),
+        normalize_text(event.get("competition", "")),
+    )
+
+
+# ============================================================
+# DYNAMO – ROBUSTNÍ PARSOVÁNÍ
+# ============================================================
+
+def detect_competition_from_container(container):
     """
-    Soutěž hledáme pouze v konkrétním zápasovém bloku.
-    Pokud ji tam nenajdeme, vrátíme bezpečnou hodnotu.
+    Soutěž hledáme co nejblíž konkrétnímu zápasu.
+
+    Důležité:
+    Nebereme celý <body> ani velkého rodiče, protože by se
+    přípravný zápas mohl omylem označit jako CHL.
     """
 
-    if container is None:
-        return "Hokej"
+    texts = []
 
-    text = clean_text(
-        container.get_text(" ", strip=True)
-    ).lower()
+    # Nejprve přímý text containeru
+    own_text = container.get_text(" ", strip=True)
 
-    # Pořadí je důležité.
-    # Specifičtější soutěže mají přednost.
-    competitions = [
-        (
-            "red bulls salute",
-            "Red Bulls Salute",
-        ),
-        (
-            "přípravná utkání dynama a",
-            "Přípravné utkání",
-        ),
-        (
-            "přípravná utkání dynama",
-            "Přípravné utkání",
-        ),
-        (
-            "liga mistrů",
-            "Liga Mistrů",
-        ),
-        (
-            "tipsport extraliga",
-            "Tipsport extraliga",
-        ),
-    ]
+    if own_text:
+        texts.append(own_text)
 
-    for search_text, result in competitions:
-        if search_text in text:
-            return result
+    # Potom pouze menší bezprostřední části
+    for child in container.find_all(
+        ["span", "div", "p", "a", "strong", "small"],
+        limit=20,
+    ):
+        text = child.get_text(" ", strip=True)
 
-    return "Hokej"
+        if text:
+            texts.append(text)
 
+    combined = " | ".join(texts)
 
-# ============================================================
-# DYNAMO – TÝMY
-# ============================================================
+    normalized = normalize_text(combined)
 
-def extract_team_names(container):
-    teams = []
+    # Priorita přesných soutěží
+    if "liga mistr" in normalized:
+        return "Liga mistrů"
 
-    if container is None:
-        return teams
+    if "tipsport extraliga" in normalized:
+        return "Tipsport extraliga"
 
-    for img in container.find_all("img"):
-        original_alt = clean_text(
-            img.get("alt", "")
-        )
+    if "extraliga" in normalized:
+        return "Tipsport extraliga"
 
-        alt = normalize_team_name(
-            original_alt
-        )
+    if "diamond league" in normalized:
+        return "Diamond League"
 
-        if not alt:
-            continue
+    if "biatlon" in normalized or "biathlon" in normalized:
+        return "Biatlon"
 
-        # Ignorujeme obecné obrázky.
-        ignored = {
-            "online",
-            "reportáž",
-            "vs",
-            "logo",
-        }
+    # Příprava / turnaje
+    if "pripr" in normalized or "přípr" in normalized:
+        return "Příprava"
 
-        if alt.lower() in ignored:
-            continue
+    if "red bulls salute" in normalized:
+        return "Red Bull Salute"
 
-        # Na stránce Dynama jsou týmová loga
-        # označena "Logo ...".
-        is_team_logo = (
-            "logo" in original_alt.lower()
-        )
-
-        if is_team_logo or "dynamo" in alt.lower():
-            if alt not in teams:
-                teams.append(alt)
-
-    return teams
+    return "Neznámá soutěž"
 
 
-# ============================================================
-# DYNAMO – KONTEJNER ZÁPASU
-# ============================================================
-
-def find_match_container(date_node):
+def find_smallest_match_container(date_node):
     """
-    Od konkrétního data stoupáme DOM stromem.
-    Vybereme nejmenší rodičovský blok, který obsahuje
-    datum, VS, Dynamo a soupeře.
+    Najde nejmenší DOM kontejner, který současně obsahuje:
+    - datum
+    - Dynamo
+    - VS / soupeře
+
+    Tím se zabrání párování týmů z jiného zápasu.
     """
 
     current = date_node
 
-    for _ in range(12):
+    for _ in range(8):
         if current is None:
             break
 
-        if not hasattr(current, "find_all"):
-            current = getattr(
-                current,
-                "parent",
-                None,
-            )
-            continue
+        text = current.get_text(" ", strip=True)
+        normalized = normalize_text(text)
 
-        text = clean_text(
-            current.get_text(
-                " ",
-                strip=True,
-            )
+        has_dynamo = (
+            "dynamo pardubice" in normalized
+            or "dynamo" in normalized
         )
 
-        teams = extract_team_names(
-            current
+        has_vs = (
+            " vs " in f" {normalized} "
+            or "versus" in normalized
         )
 
-        has_vs = bool(
-            re.search(
-                r"\bVS\b",
-                text,
-                flags=re.IGNORECASE,
-            )
-        )
-
-        has_dynamo = any(
-            "dynamo" in team.lower()
-            for team in teams
-        )
-
-        if (
-            has_vs
-            and has_dynamo
-            and len(teams) >= 2
-        ):
-            return current
+        # Potřebujeme dostatečně malý kontejner
+        if has_dynamo and has_vs:
+            # Nechceme extrémně velké kontejnery
+            if len(text) < 1500:
+                return current
 
         current = current.parent
 
     return None
 
 
-# ============================================================
-# DYNAMO – PARSER
-# ============================================================
+def extract_team_names(container):
+    """
+    Extrahuje týmy z obrázků/log alt textů a viditelného textu.
+    """
 
-def parse_dynamo_matches():
-    print("=== DYNAMO PARDUBICE ===")
-    print(f"Zdroj: {DYNAMO_URL}")
+    candidates = []
 
-    html = fetch_html(
-        DYNAMO_URL
-    )
+    # ALT texty log
+    for img in container.find_all("img"):
+        alt = img.get("alt", "").strip()
 
-    if not html:
-        print(
-            "Dynamo: stránku se nepodařilo načíst."
-        )
-        return []
+        if alt:
+            candidates.append(alt)
 
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
+    # Viditelné texty
+    for node in container.find_all(
+        ["span", "div", "a", "strong", "p"],
+        limit=100,
+    ):
+        text = node.get_text(" ", strip=True)
 
-    date_pattern = re.compile(
-        r"(?:po|út|ut|st|čt|ct|pá|pa|so|ne)?"
-        r"\s*\d{1,2}\.\s*"
-        r"\d{1,2}\.\s*"
-        r"\d{4}"
-        r"\s*,?\s*"
-        r"\d{1,2}:\d{2}",
+        if 2 <= len(text) <= 100:
+            candidates.append(text)
+
+    # Zkusíme najít známé týmy
+    found = []
+
+    for canonical, aliases in TEAM_ALIASES.items():
+        for candidate in candidates:
+            if contains_alias(candidate, aliases):
+                found.append(canonical)
+                break
+
+    found = unique_list(found)
+
+    # Pokud máme přesně dva týmy, máme hotovo
+    if len(found) >= 2:
+        return found[:2]
+
+    # Fallback – pokus o textovou formu:
+    text = container.get_text(" ", strip=True)
+
+    match = re.search(
+        r"(.+?)\s+(?:VS|vs|versus)\s+(.+)",
+        text,
         re.IGNORECASE,
     )
 
-    date_nodes = list(
-        soup.find_all(
-            string=date_pattern
-        )
-    )
+    if match:
+        home = match.group(1).strip()
+        away = match.group(2).strip()
 
-    print(
-        f"Nalezených datumových bloků: "
-        f"{len(date_nodes)}"
-    )
+        if home and away:
+            return [home, away]
 
-    matches = []
+    return found
+
+
+def parse_dynamo():
+    print("=== DYNAMO PARDUBICE ===")
+    print(f"Zdroj: {DYNAMO_URL}")
+
+    html_text = get_url(DYNAMO_URL)
+
+    if not html_text:
+        print("Dynamo: nepodařilo se načíst stránku.")
+        return []
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    events = []
+
+    # Hledáme všechny elementy obsahující datum
+    date_nodes = []
+
+    for node in soup.find_all(string=True):
+        text = node.strip()
+
+        if not text:
+            continue
+
+        if re.search(r"\b\d{1,2}\.\s*\d{1,2}\.\s*\d{4}", text):
+            date_nodes.append(node)
+
+    print(f"Datumových bloků: {len(date_nodes)}")
 
     for date_node in date_nodes:
-        date_text = clean_text(
-            str(date_node)
-        )
+        text = date_node.strip()
 
-        match_datetime = parse_czech_datetime(
-            date_text
-        )
+        event_date = parse_date_time(text)
 
-        if match_datetime is None:
+        if not event_date:
             continue
 
-        container = find_match_container(
-            date_node
-        )
+        container = find_smallest_match_container(date_node.parent)
 
-        if container is None:
+        if not container:
             continue
 
-        teams = extract_team_names(
-            container
-        )
+        teams = extract_team_names(container)
 
         if len(teams) < 2:
             continue
 
-        # Dynamo musí být jeden z týmů.
-        dynamo_index = None
-
-        for index, team in enumerate(teams):
-            if "dynamo" in team.lower():
-                dynamo_index = index
-                break
-
-        if dynamo_index is None:
+        # Musí jít skutečně o Dynamo
+        if not any(
+            contains_alias(team, TEAM_ALIASES["HC Dynamo Pardubice"])
+            for team in teams
+        ):
             continue
 
-        opponent = None
+        # Určení domácí/hosté
+        first = teams[0]
+        second = teams[1]
 
-        for index, team in enumerate(teams):
-            if index != dynamo_index:
-                opponent = team
-                break
+        first_is_dynamo = contains_alias(
+            first,
+            TEAM_ALIASES["HC Dynamo Pardubice"],
+        )
 
-        if not opponent:
+        second_is_dynamo = contains_alias(
+            second,
+            TEAM_ALIASES["HC Dynamo Pardubice"],
+        )
+
+        if first_is_dynamo:
+            home = "HC Dynamo Pardubice"
+            away = second
+
+        elif second_is_dynamo:
+            home = first
+            away = "HC Dynamo Pardubice"
+
+        else:
             continue
 
-        # Přesné pořadí týmů podle HTML.
-        home_team = teams[0]
-        away_team = teams[1]
+        competition = detect_competition_from_container(container)
 
-        competition = detect_competition(
-            container
+        event = make_event(
+            event_date=event_date,
+            home=home,
+            away=away,
+            competition=competition,
+            sport="hokej",
         )
 
-        event = {
-            "sport": "hokej",
-            "date": match_datetime,
-            "home": home_team,
-            "away": away_team,
-            "competition": competition,
-            "source": DYNAMO_URL,
-            "tv_confirmed": False,
-            "tv_sources": [],
-        }
-
-        matches.append(event)
+        events.append(event)
 
     # --------------------------------------------------------
-    # DEDUPLIKACE
+    # Deduplikace
     # --------------------------------------------------------
 
-    unique = {}
+    unique_events = {}
+    for event in events:
+        unique_events[event_key(event)] = event
 
-    for event in matches:
-        key = (
-            event["date"].isoformat(),
-            event["home"],
-            event["away"],
-        )
+    events = list(unique_events.values())
 
-        unique[key] = event
+    events.sort(key=lambda x: x["date"])
 
-    matches = list(
-        unique.values()
-    )
+    print(f"Výsledných zápasů Dynamo: {len(events)}")
 
-    matches.sort(
-        key=lambda event: event["date"]
-    )
+    for event in events:
+        dt = datetime.fromisoformat(event["date"])
 
-    print(
-        f"Výsledných zápasů Dynamo: "
-        f"{len(matches)}"
-    )
-
-    for event in matches:
         print(
-            f'{event["date"].strftime("%Y-%m-%d %H:%M")} '
-            f'{event["home"]} vs {event["away"]} '
-            f'| {event["competition"]}'
+            f"{dt.strftime('%Y-%m-%d %H:%M')} "
+            f"{event['home']} vs {event['away']} "
+            f"| {event['competition']}"
         )
 
-    return matches
+    return events
 
 
 # ============================================================
-# ATLETIKA
+# TV – KANÁLY
+# ============================================================
+
+TV_CHANNEL_PATTERNS = [
+    r"\bSport\s*[1-4]\b",
+    r"\bČT\s*sport\b",
+    r"\bCT\s*sport\b",
+
+    r"\bNova\s*Sport\s*[1-4]\b",
+
+    r"\bOneplay\s*Sport\s*[1-4]\b",
+    r"\bOneplay\s*Sport\b",
+
+    r"\bO2\s*TV\s*Sport\b",
+
+    r"\bPremier\s*Sport\s*[1-3]\b",
+
+    r"\bEurosport\s*[1-2]\b",
+
+    r"\bPolsat\s*Sport\s*[1-4]\b",
+
+    r"\bESPN\b",
+
+    r"\bDAZN\b",
+]
+
+
+def extract_tv_channels(text):
+    channels = []
+
+    for pattern in TV_CHANNEL_PATTERNS:
+        for match in re.finditer(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            channel = match.group(0).strip()
+
+            if channel not in channels:
+                channels.append(channel)
+
+    return channels
+
+
+# ============================================================
+# TV – PÁROVÁNÍ UDÁLOSTI
+# ============================================================
+
+def event_matches_text(event, text):
+    """
+    Kritická funkce.
+
+    Nestačí pouze datum.
+    Nestačí pouze Dynamo.
+
+    Musí být nalezen:
+        1. domácí tým
+        2. hostující tým
+        3. datum
+
+    Tím zabráníme přiřazení TV z jiného zápasu.
+    """
+
+    normalized = normalize_text(text)
+
+    home_aliases = TEAM_ALIASES.get(
+        event["home"],
+        [event["home"]],
+    )
+
+    away_aliases = TEAM_ALIASES.get(
+        event["away"],
+        [event["away"]],
+    )
+
+    home_found = contains_alias(
+        normalized,
+        home_aliases,
+    )
+
+    away_found = contains_alias(
+        normalized,
+        away_aliases,
+    )
+
+    event_dt = datetime.fromisoformat(event["date"])
+
+    date_patterns = [
+        event_dt.strftime("%d.%m.%Y"),
+        event_dt.strftime("%d. %m. %Y"),
+        event_dt.strftime("%d/%m/%Y"),
+        event_dt.strftime("%Y-%m-%d"),
+        event_dt.strftime("%d.%m."),
+        event_dt.strftime("%d. %m."),
+    ]
+
+    date_found = any(
+        normalize_text(pattern) in normalized
+        for pattern in date_patterns
+    )
+
+    return home_found and away_found and date_found
+
+
+def add_tv_result(event, channels, source):
+    if not channels:
+        return False
+
+    event["tv_confirmed"] = True
+    event["tv_checked"] = True
+
+    event["tv_channels"] = unique_list(
+        event.get("tv_channels", []) + channels
+    )
+
+    event["tv_sources"] = unique_list(
+        event.get("tv_sources", []) + [source]
+    )
+
+    return True
+
+
+# ============================================================
+# TV PROVIDER 1 – CHL
+# ============================================================
+
+def search_chl_tv(event):
+    print("  TV zdroj: CHL")
+
+    html_text = get_url(CHL_TV_URL)
+
+    if not html_text:
+        return False
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    event_dt = datetime.fromisoformat(event["date"])
+
+    target_date_strings = [
+        event_dt.strftime("%d/%m/%Y"),
+        event_dt.strftime("%d.%m.%Y"),
+        event_dt.strftime("%d/%m/%y"),
+    ]
+
+    # --------------------------------------------------------
+    # Nejprve hledáme jednotlivé řádky/tabulky.
+    # --------------------------------------------------------
+
+    containers = []
+
+    containers.extend(soup.find_all("tr"))
+    containers.extend(soup.find_all("article"))
+    containers.extend(soup.find_all("li"))
+
+    for container in containers:
+        text = container.get_text(" ", strip=True)
+
+        if not text:
+            continue
+
+        if not event_matches_text(event, text):
+            continue
+
+        # Pokud datum není v řádku přesně, zkusíme povolit
+        # samotný rok + den/měsíc.
+        normalized = normalize_text(text)
+
+        date_ok = any(
+            normalize_text(value) in normalized
+            for value in target_date_strings
+        )
+
+        if not date_ok:
+            continue
+
+        channels = extract_tv_channels(text)
+
+        if channels:
+            print(f"  Nalezeno: {', '.join(channels)}")
+            return add_tv_result(
+                event,
+                channels,
+                "CHL Games on TV",
+            )
+
+    # --------------------------------------------------------
+    # Fallback: textové bloky
+    # --------------------------------------------------------
+
+    full_text = soup.get_text("\n", strip=True)
+
+    lines = [
+        line.strip()
+        for line in full_text.splitlines()
+        if line.strip()
+    ]
+
+    for index, line in enumerate(lines):
+        window = "\n".join(
+            lines[max(0, index - 3): index + 5]
+        )
+
+        if event_matches_text(event, window):
+            channels = extract_tv_channels(window)
+
+            if channels:
+                print(f"  Nalezeno: {', '.join(channels)}")
+
+                return add_tv_result(
+                    event,
+                    channels,
+                    "CHL Games on TV",
+                )
+
+    print("  Nenalezeno.")
+
+    return False
+
+
+# ============================================================
+# TV PROVIDER 2 – ONEPLAY
+# ============================================================
+
+def search_oneplay_tv(event):
+    print("  TV zdroj: Oneplay")
+
+    html_text = get_url(ONEPLAY_SPORT_URL)
+
+    if not html_text:
+        return False
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # --------------------------------------------------------
+    # Procházíme menší bloky, ne celou stránku.
+    # --------------------------------------------------------
+
+    containers = []
+
+    containers.extend(soup.find_all("article"))
+    containers.extend(soup.find_all("li"))
+    containers.extend(soup.find_all("div"))
+
+    checked = 0
+
+    for container in containers:
+        text = container.get_text(" ", strip=True)
+
+        if len(text) > 1200:
+            continue
+
+        if not text:
+            continue
+
+        normalized = normalize_text(text)
+
+        # Musí obsahovat alespoň Dynamo nebo soupeře
+        if not (
+            contains_alias(
+                normalized,
+                TEAM_ALIASES.get(
+                    event["home"],
+                    [event["home"]],
+                ),
+            )
+            or
+            contains_alias(
+                normalized,
+                TEAM_ALIASES.get(
+                    event["away"],
+                    [event["away"]],
+                ),
+            )
+        ):
+            continue
+
+        checked += 1
+
+        # Oneplay může používat jiné datumové formáty.
+        if event_matches_text(event, text):
+            channels = extract_tv_channels(text)
+
+            if not channels:
+                # Pokud se jedná o Oneplay sport stránku,
+                # samotný název Oneplay Sport je relevantní.
+                if "oneplay sport" in normalized:
+                    channels = ["Oneplay Sport"]
+
+            if channels:
+                print(f"  Nalezeno: {', '.join(channels)}")
+
+                return add_tv_result(
+                    event,
+                    channels,
+                    "Oneplay Sport",
+                )
+
+    print(f"  Nenalezeno ({checked} kandidátních bloků).")
+
+    return False
+
+
+# ============================================================
+# TV PROVIDER 3 – HOKEJ.CZ
+# ============================================================
+
+def search_hokej_cz_tv(event):
+    print("  TV zdroj: Hokej.cz")
+
+    html_text = get_url(HOKEJ_CZ_URL)
+
+    if not html_text:
+        return False
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    containers = []
+
+    containers.extend(soup.find_all("tr"))
+    containers.extend(soup.find_all("article"))
+    containers.extend(soup.find_all("li"))
+
+    for container in containers:
+        text = container.get_text(" ", strip=True)
+
+        if not text:
+            continue
+
+        if event_matches_text(event, text):
+            channels = extract_tv_channels(text)
+
+            if channels:
+                print(f"  Nalezeno: {', '.join(channels)}")
+
+                return add_tv_result(
+                    event,
+                    channels,
+                    "Hokej.cz",
+                )
+
+    print("  Nenalezeno.")
+
+    return False
+
+
+# ============================================================
+# TV – GENERICKÉ WEBOVÉ HLEDÁNÍ
+# ============================================================
+
+def duckduckgo_search(query):
+    url = "https://html.duckduckgo.com/html/"
+
+    html_text = get_url(
+        url,
+        params={"q": query},
+    )
+
+    if not html_text:
+        return []
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    results = []
+
+    for result in soup.select(".result"):
+        title = result.select_one(".result__title")
+        snippet = result.select_one(".result__snippet")
+
+        title_text = (
+            title.get_text(" ", strip=True)
+            if title else ""
+        )
+
+        snippet_text = (
+            snippet.get_text(" ", strip=True)
+            if snippet else ""
+        )
+
+        text = f"{title_text} {snippet_text}".strip()
+
+        if text:
+            results.append(text)
+
+    return results
+
+
+def search_web_for_tv(event):
+    print("  TV zdroj: obecné webové hledání")
+
+    event_dt = datetime.fromisoformat(event["date"])
+
+    date_cz = event_dt.strftime("%d.%m.%Y")
+    date_iso = event_dt.strftime("%Y-%m-%d")
+
+    home = event["home"]
+    away = event["away"]
+
+    queries = [
+        f'"{home}" "{away}" "{date_cz}" TV',
+        f'"{home}" "{away}" "{date_cz}" televize',
+        f'"{home}" "{away}" "{date_iso}" TV',
+        f'"{home}" "{away}" "{date_cz}" Sport 1 Sport 2',
+        f'"{home}" "{away}" "{date_cz}" Oneplay',
+    ]
+
+    for query in queries:
+        print(f"    Dotaz: {query}")
+
+        results = duckduckgo_search(query)
+
+        for result in results:
+            # Zásadní: výsledek musí obsahovat oba týmy.
+            if not event_matches_text(event, result):
+                continue
+
+            channels = extract_tv_channels(result)
+
+            if channels:
+                print(
+                    f"    Nalezeno: {', '.join(channels)}"
+                )
+
+                return add_tv_result(
+                    event,
+                    channels,
+                    "Web search",
+                )
+
+    print("  Nenalezeno.")
+
+    return False
+
+
+# ============================================================
+# TV – SPECIALIZOVANÉ ZDROJE PODLE SOUTĚŽE
+# ============================================================
+
+TV_PROVIDERS = {
+    "Liga mistrů": [
+        search_chl_tv,
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Tipsport extraliga": [
+        search_oneplay_tv,
+        search_hokej_cz_tv,
+        search_web_for_tv,
+    ],
+
+    "Diamond League": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Biatlon": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Mistrovství světa": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Mistrovství Evropy": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    # Pro přípravu zatím používáme obecné hledání.
+    "Příprava": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Red Bull Salute": [
+        search_oneplay_tv,
+        search_web_for_tv,
+    ],
+
+    "Neznámá soutěž": [
+        search_web_for_tv,
+    ],
+}
+
+
+def verify_tv_broadcast(event):
+    print(
+        f"=== TV OVĚŘENÍ ===\n"
+        f"{event['home']} vs {event['away']}\n"
+        f"Soutěž: {event['competition']}"
+    )
+
+    competition = event.get(
+        "competition",
+        "Neznámá soutěž",
+    )
+
+    providers = TV_PROVIDERS.get(
+        competition,
+        TV_PROVIDERS["Neznámá soutěž"],
+    )
+
+    event["tv_checked"] = True
+
+    # --------------------------------------------------------
+    # Postupně zkoušíme zdroje.
+    # Jakmile najdeme potvrzení, můžeme skončit.
+    # --------------------------------------------------------
+
+    for provider in providers:
+        try:
+            found = provider(event)
+
+            if found:
+                print(
+                    f"→ TV POTVRZENO: "
+                    f"{', '.join(event['tv_channels'])}"
+                )
+
+                return event
+
+        except Exception as exc:
+            print(
+                f"  Chyba TV providera "
+                f"{provider.__name__}: {exc}"
+            )
+
+    event["tv_confirmed"] = False
+
+    print(
+        "→ TV NEPOTVRZENO: "
+        "žádný zdroj nespároval přesnou událost."
+    )
+
+    return event
+
+
+# ============================================================
+# ATHLETICS
 # ============================================================
 
 def parse_athletics():
@@ -451,17 +1253,17 @@ def parse_athletics():
         "halové ME/MS, významné české mítinky"
     )
 
-    events = []
+    # --------------------------------------------------------
+    # Záměrně zde zatím negenerujeme falešné události.
+    #
+    # TV systém je připravený a pokud se později přidá zdroj
+    # atletických událostí, každá událost projde stejnou funkcí
+    # verify_tv_broadcast().
+    # --------------------------------------------------------
 
-    print(
-        "ČT Atletika načtena jako záložní zdroj."
-    )
-    print(
-        f"Vybraných atletických událostí: "
-        f"{len(events)}"
-    )
+    print("Vybraných atletických událostí: 0")
 
-    return events
+    return []
 
 
 # ============================================================
@@ -471,167 +1273,181 @@ def parse_athletics():
 def parse_biathlon():
     print("=== BIATLON ===")
 
-    events = []
+    # Stejný princip jako u atletiky.
+    # Události musí nejdříve přijít z datového zdroje.
+    # TV se potom dohledává samostatně.
+
+    print("Celkem událostí: 0")
+
+    return []
+
+
+# ============================================================
+# WORLD HOCKEY CHAMPIONSHIP
+# ============================================================
+
+def parse_world_hockey():
+    print("=== MS V HOKEJI ===")
 
     print(
-        f"Celkem událostí: {len(events)}"
+        "World Hockey Championship je v konfiguraci vypnuté."
     )
 
-    return events
+    return []
 
 
 # ============================================================
-# TV OVĚŘENÍ
+# FILTER
 # ============================================================
 
-def verify_tv_broadcast(event):
-    print(
-        f'TV ověření: '
-        f'{event["home"]} vs {event["away"]}'
-    )
+def filter_events(events, mode):
+    now = datetime.now(TIMEZONE)
 
-    # TV ověřování necháváme jako samostatnou funkci.
-    # Zápas samotný není závislý na nalezení TV zdroje.
-
-    event["tv_confirmed"] = False
-    event["tv_sources"] = []
-
-    return event
-
-
-def should_check_tv(event, mode, now):
-    event_date = event["date"].date()
+    today = now.date()
 
     if mode == "daily":
-        return event_date == now.date()
+        result = []
 
-    monday = (
-        now.date()
-        - timedelta(days=now.weekday())
-    )
+        for event in events:
+            event_dt = datetime.fromisoformat(
+                event["date"]
+            )
 
-    sunday = monday + timedelta(days=6)
+            if event_dt.date() == today:
+                result.append(event)
 
-    return monday <= event_date <= sunday
-
-
-# ============================================================
-# FILTRACE
-# ============================================================
-
-def filter_events_for_mode(
-    events,
-    mode,
-    now,
-):
-    if mode == "daily":
-        return [
-            event
-            for event in events
-            if event["date"].date()
-            == now.date()
-        ]
+        return result
 
     if mode == "weekly":
-        monday = (
-            now.date()
-            - timedelta(days=now.weekday())
-        )
+        end_date = today + timedelta(days=7)
 
-        sunday = monday + timedelta(days=6)
+        result = []
 
-        return [
-            event
-            for event in events
-            if monday
-            <= event["date"].date()
-            <= sunday
-        ]
+        for event in events:
+            event_dt = datetime.fromisoformat(
+                event["date"]
+            )
 
-    return events
+            if today <= event_dt.date() <= end_date:
+                result.append(event)
 
-
-# ============================================================
-# SBĚR VŠECH SPORTŮ
-# ============================================================
-
-def get_sport_events(
-    config,
-    mode,
-    now,
-):
-    events = []
-
-    # Dynamo
-    if config.get(
-        "dynamo_pardubice"
-    ):
-        dynamo_events = (
-            parse_dynamo_matches()
-        )
-
-        for event in dynamo_events:
-            if should_check_tv(
-                event,
-                mode,
-                now,
-            ):
-                verify_tv_broadcast(
-                    event
-                )
-
-        events.extend(
-            dynamo_events
-        )
-
-    # Atletika
-    if config.get(
-        "diamond_league"
-    ):
-        events.extend(
-            parse_athletics()
-        )
-
-    # Biatlon
-    if config.get(
-        "biathlon"
-    ):
-        events.extend(
-            parse_biathlon()
-        )
-
-    # MS v hokeji
-    if config.get(
-        "world_hockey_championship"
-    ):
-        pass
+        return result
 
     return events
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM HTML
+# ============================================================
+
+def escape_telegram_html(text):
+    if text is None:
+        return ""
+
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def format_event(event):
+    event_dt = datetime.fromisoformat(
+        event["date"]
+    )
+
+    date_text = event_dt.strftime(
+        "%d.%m.%Y %H:%M"
+    )
+
+    competition = escape_telegram_html(
+        event.get("competition", "")
+    )
+
+    home = escape_telegram_html(
+        event.get("home", "")
+    )
+
+    away = escape_telegram_html(
+        event.get("away", "")
+    )
+
+    message = (
+        f"🏆 <b>{competition}</b>\n"
+        f"📅 {date_text}\n"
+        f"🏒 <b>{home}</b> vs <b>{away}</b>\n"
+    )
+
+    if event.get("tv_confirmed"):
+        channels = ", ".join(
+            event.get("tv_channels", [])
+        )
+
+        message += (
+            f"📺 TV: <b>"
+            f"{escape_telegram_html(channels)}"
+            f"</b>\n"
+        )
+
+    else:
+        message += "📺 TV: zatím nepotvrzeno\n"
+
+    return message
+
+
+def make_daily_message(events):
+    if not events:
+        return None
+
+    lines = [
+        "📅 <b>SPORT MONITOR – DNES</b>",
+        "",
+    ]
+
+    for event in events:
+        lines.append(
+            format_event(event)
+        )
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def make_weekly_message(events):
+    if not events:
+        return None
+
+    lines = [
+        "📅 <b>SPORT MONITOR – PŘÍŠTÍCH 7 DNÍ</b>",
+        "",
+    ]
+
+    for event in events:
+        lines.append(
+            format_event(event)
+        )
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+# ============================================================
+# TELEGRAM SEND
 # ============================================================
 
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN:
-        print(
-            "Telegram: chybí "
-            "TELEGRAM_BOT_TOKEN."
-        )
+        print("Telegram: chybí TELEGRAM_BOT_TOKEN.")
         return False
 
     if not TELEGRAM_CHAT_ID:
-        print(
-            "Telegram: chybí "
-            "TELEGRAM_CHAT_ID."
-        )
+        print("Telegram: chybí TELEGRAM_CHAT_ID.")
         return False
 
     url = (
-        "https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}"
-        "/sendMessage"
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
     payload = {
@@ -642,156 +1458,21 @@ def send_telegram(message):
     }
 
     try:
-        response = requests.post(
+        response = session.post(
             url,
             json=payload,
             timeout=REQUEST_TIMEOUT,
         )
 
-        if response.ok:
-            print(
-                "Telegram: zpráva odeslána."
-            )
-            return True
+        response.raise_for_status()
 
-        print(
-            "Telegram chyba:",
-            response.status_code,
-            response.text,
-        )
+        print("Telegram: zpráva odeslána.")
 
-    except requests.RequestException as exc:
-        print(
-            f"Telegram chyba připojení: "
-            f"{exc}"
-        )
+        return True
 
-    return False
-
-
-# ============================================================
-# TELEGRAM HTML
-# ============================================================
-
-def escape_telegram_html(text):
-    """
-    Telegram HTML dovoluje pouze určité tagy.
-    Tato funkce escapuje pouze skutečný obsah,
-    ne naše vlastní HTML tagy.
-    """
-
-    if text is None:
-        return ""
-
-    text = str(text)
-
-    text = text.replace(
-        "&",
-        "&amp;",
-    )
-    text = text.replace(
-        "<",
-        "&lt;",
-    )
-    text = text.replace(
-        ">",
-        "&gt;",
-    )
-
-    return text
-
-
-def format_event(event):
-    date_text = event["date"].strftime(
-        "%d.%m.%Y %H:%M"
-    )
-
-    home = escape_telegram_html(
-        event["home"]
-    )
-
-    away = escape_telegram_html(
-        event["away"]
-    )
-
-    competition = escape_telegram_html(
-        event.get(
-            "competition",
-            "Sport",
-        )
-    )
-
-    lines = [
-        f"🏆 <b>{competition}</b>",
-        f"🏒 <b>{home}</b> – <b>{away}</b>",
-        f"🕐 {date_text}",
-    ]
-
-    if event.get(
-        "tv_confirmed"
-    ):
-        sources = event.get(
-            "tv_sources",
-            [],
-        )
-
-        if sources:
-            safe_sources = [
-                escape_telegram_html(
-                    source
-                )
-                for source in sources
-            ]
-
-            lines.append(
-                "📺 TV: "
-                + ", ".join(
-                    safe_sources
-                )
-            )
-        else:
-            lines.append(
-                "📺 TV: potvrzeno"
-            )
-
-    else:
-        lines.append(
-            "📺 TV: zatím nepotvrzeno"
-        )
-
-    return "\n".join(lines)
-
-
-def make_message(
-    events,
-    mode,
-):
-    if not events:
-        return None
-
-    if mode == "daily":
-        header = (
-            "📅 <b>SPORT MONITOR – DNES</b>"
-        )
-    else:
-        header = (
-            "📅 <b>SPORT MONITOR – TENTO TÝDEN</b>"
-        )
-
-    parts = [
-        header,
-        "",
-    ]
-
-    for event in events:
-        parts.append(
-            format_event(event)
-        )
-        parts.append("")
-
-    return "\n".join(
-        parts
-    ).strip()
+    except Exception as exc:
+        print(f"Telegram chyba: {exc}")
+        return False
 
 
 # ============================================================
@@ -799,12 +1480,13 @@ def make_message(
 # ============================================================
 
 def load_state():
-    try:
-        if not os.path.exists(
-            STATE_FILE
-        ):
-            return {}
+    if not os.path.exists(STATE_FILE):
+        return {
+            "events": {},
+            "last_run": None,
+        }
 
+    try:
         with open(
             STATE_FILE,
             "r",
@@ -813,25 +1495,21 @@ def load_state():
             return json.load(file)
 
     except Exception as exc:
-        print(
-            f"State: nepodařilo se "
-            f"načíst: {exc}"
-        )
-        return {}
+        print(f"State: chyba načtení: {exc}")
+
+        return {
+            "events": {},
+            "last_run": None,
+        }
 
 
 def save_state(state):
+    os.makedirs(
+        os.path.dirname(STATE_FILE),
+        exist_ok=True,
+    )
+
     try:
-        directory = os.path.dirname(
-            STATE_FILE
-        )
-
-        if directory:
-            os.makedirs(
-                directory,
-                exist_ok=True,
-            )
-
         with open(
             STATE_FILE,
             "w",
@@ -844,11 +1522,21 @@ def save_state(state):
                 indent=2,
             )
 
+        print(f"State uložen: {STATE_FILE}")
+
     except Exception as exc:
-        print(
-            f"State: nepodařilo se "
-            f"uložit: {exc}"
-        )
+        print(f"State: chyba uložení: {exc}")
+
+
+def update_state(state, events):
+    for event in events:
+        state["events"][event_key(event).__repr__()] = event
+
+    state["last_run"] = datetime.now(
+        TIMEZONE
+    ).isoformat()
+
+    return state
 
 
 # ============================================================
@@ -856,25 +1544,16 @@ def save_state(state):
 # ============================================================
 
 def main():
-    print(
-        "======================================"
-    )
-    print(
-        "SPORT MONITOR"
-    )
-    print(
-        "======================================"
-    )
+    print("=" * 38)
+    print("SPORT MONITOR")
+    print("=" * 38)
 
     mode = "daily"
 
     if len(sys.argv) > 1:
         mode = sys.argv[1].lower()
 
-    if mode not in {
-        "daily",
-        "weekly",
-    }:
+    if mode not in ("daily", "weekly"):
         print(
             f"Neznámý režim: {mode}"
         )
@@ -883,20 +1562,14 @@ def main():
         )
         sys.exit(1)
 
-    now = get_now()
+    now = datetime.now(TIMEZONE)
 
-    print(
-        f"Režim: {mode}"
-    )
-
+    print(f"Režim: {mode}")
     print(
         f"Čas: {now.isoformat()}"
     )
 
-    print(
-        "Konfigurace:"
-    )
-
+    print("Konfigurace:")
     print(
         json.dumps(
             CONFIG,
@@ -906,30 +1579,55 @@ def main():
     )
 
     # --------------------------------------------------------
-    # DATA
+    # SBĚR UDÁLOSTÍ
     # --------------------------------------------------------
 
-    all_events = get_sport_events(
-        CONFIG,
-        mode,
-        now,
-    )
+    all_events = []
 
-    # --------------------------------------------------------
-    # RELEVANTNÍ UDÁLOSTI
-    # --------------------------------------------------------
-
-    relevant_events = (
-        filter_events_for_mode(
-            all_events,
-            mode,
-            now,
+    if CONFIG["dynamo_pardubice"]:
+        all_events.extend(
+            parse_dynamo()
         )
+
+    if CONFIG["diamond_league"]:
+        all_events.extend(
+            parse_athletics()
+        )
+
+    if CONFIG["biathlon"]:
+        all_events.extend(
+            parse_biathlon()
+        )
+
+    if CONFIG["world_hockey_championship"]:
+        all_events.extend(
+            parse_world_hockey()
+        )
+
+    # --------------------------------------------------------
+    # DEDUPLIKACE
+    # --------------------------------------------------------
+
+    unique_events = {}
+
+    for event in all_events:
+        unique_events[event_key(event)] = event
+
+    all_events = list(
+        unique_events.values()
     )
 
-    relevant_events.sort(
-        key=lambda event:
-        event["date"]
+    all_events.sort(
+        key=lambda x: x["date"]
+    )
+
+    # --------------------------------------------------------
+    # DAILY / WEEKLY FILTER
+    # --------------------------------------------------------
+
+    relevant_events = filter_events(
+        all_events,
+        mode,
     )
 
     print(
@@ -937,23 +1635,7 @@ def main():
         f"{len(relevant_events)}"
     )
 
-    for event in relevant_events:
-        print(
-            f'{event["date"].strftime("%Y-%m-%d %H:%M")} '
-            f'{event["home"]} vs '
-            f'{event["away"]}'
-        )
-
-    # --------------------------------------------------------
-    # ZPRÁVA
-    # --------------------------------------------------------
-
-    message = make_message(
-        relevant_events,
-        mode,
-    )
-
-    if not message:
+    if not relevant_events:
         print(
             "Žádné relevantní události."
         )
@@ -961,85 +1643,98 @@ def main():
             "Telegram se neposílá."
         )
 
-        save_state({
-            "last_run": now.isoformat(),
-            "mode": mode,
-            "events": [],
-        })
+        # Přesto uložíme state
+        state = load_state()
+        state = update_state(
+            state,
+            all_events,
+        )
+        save_state(state)
 
         return
 
+    # --------------------------------------------------------
+    # TV VERIFIKACE
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "======================================"
+    )
+    print(
+        "TV VERIFIKACE RELEVANTNÍCH UDÁLOSTÍ"
+    )
     print(
         "======================================"
     )
 
-    print(
-        "GENEROVANÁ ZPRÁVA"
-    )
+    verified_events = []
 
-    print(
-        "======================================"
-    )
+    for event in relevant_events:
+        verified_event = verify_tv_broadcast(
+            event
+        )
 
-    print(message)
-
-    print(
-        "======================================"
-    )
+        verified_events.append(
+            verified_event
+        )
 
     # --------------------------------------------------------
     # TELEGRAM
     # --------------------------------------------------------
 
-    send_telegram(
-        message
-    )
+    if mode == "weekly":
+        message = make_weekly_message(
+            verified_events
+        )
+    else:
+        message = make_daily_message(
+            verified_events
+        )
+
+    if message:
+        print()
+        print(
+            "======================================"
+        )
+        print("TELEGRAM MESSAGE")
+        print(
+            "======================================"
+        )
+        print(message)
+        print(
+            "======================================"
+        )
+
+        send_telegram(message)
 
     # --------------------------------------------------------
     # STATE
     # --------------------------------------------------------
 
-    state_events = []
+    state = load_state()
 
-    for event in relevant_events:
-        state_events.append({
-            "date": event[
-                "date"
-            ].isoformat(),
+    state = update_state(
+        state,
+        all_events,
+    )
 
-            "sport": event.get(
-                "sport",
-                "",
-            ),
+    # TV informace relevantních událostí
+    for event in verified_events:
+        key = event_key(event).__repr__()
 
-            "home": event[
-                "home"
-            ],
+        state["events"][key] = event
 
-            "away": event[
-                "away"
-            ],
+    save_state(state)
 
-            "competition": event.get(
-                "competition",
-                "",
-            ),
-
-            "tv_confirmed": event.get(
-                "tv_confirmed",
-                False,
-            ),
-        })
-
-    save_state({
-        "last_run": now.isoformat(),
-        "mode": mode,
-        "events": state_events,
-    })
+    print()
+    print(
+        "Sport Monitor dokončen."
+    )
 
 
 # ============================================================
-# START
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
