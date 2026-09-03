@@ -206,12 +206,55 @@ class WorldAthleticsScraper(BaseScraper):
             bucket.sort(key=lambda item: item["y"])
             date_text = target["dates"][day_index]
 
+            # Budapest cards are nested: e.g. both "4x100m Relay" and
+            # "4x100m Relay Final Mixed" can appear at the same coordinates.
+            # Keep the most complete text only when one candidate is a strict
+            # prefix/subset of another candidate at the same time and position.
+            candidates = []
             for card in bucket:
                 match = TIME_RE.match(card["text"])
                 if not match:
                     continue
-                time_text = match.group("time")
-                name = match.group("name").strip()
+                candidates.append({
+                    "time": match.group("time"),
+                    "name": match.group("name").strip(),
+                    "x": card["x"],
+                    "y": card["y"],
+                })
+
+            keep = [True] * len(candidates)
+            for i, short in enumerate(candidates):
+                short_norm = re.sub(r"\s+", " ", short["name"]).strip().lower()
+                for j, long in enumerate(candidates):
+                    if i == j:
+                        continue
+                    if short["time"] != long["time"]:
+                        continue
+                    if abs(short["x"] - long["x"]) > 8 or abs(short["y"] - long["y"]) > 8:
+                        continue
+
+                    long_norm = re.sub(r"\s+", " ", long["name"]).strip().lower()
+                    if (
+                        len(long_norm) > len(short_norm)
+                        and (
+                            long_norm.startswith(short_norm)
+                            or short_norm in long_norm
+                        )
+                    ):
+                        keep[i] = False
+                        break
+
+            seen = set()
+            for candidate, should_keep in zip(candidates, keep):
+                if not should_keep:
+                    continue
+
+                time_text = candidate["time"]
+                name = candidate["name"]
+                dedupe_key = (date_text, time_text, name.lower())
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
 
                 local_dt = self._local_dt(
                     date_text, time_text, target["timezone"]
