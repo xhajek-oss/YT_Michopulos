@@ -208,7 +208,60 @@ def _walk_schedule(payload, meeting: dict) -> list[tuple[str, datetime]]:
     return found
 
 
-def _make_event(meeting: dict, name: str, local_dt: datetime, source_url: str) -> SportsEvent:
+
+def _extract_swiss_timing_units(payload, meeting: dict) -> list[tuple[str, datetime, datetime | None]]:
+    """Extract official Diamond League disciplines from Swiss Timing schedule JSON."""
+    if not isinstance(payload, dict):
+        return []
+
+    units = payload.get("content", {}).get("full", {}).get("Units", {})
+    if not isinstance(units, dict):
+        return []
+
+    result = []
+    tz = ZoneInfo(meeting["timezone"])
+
+    for unit in units.values():
+        if not isinstance(unit, dict):
+            continue
+
+        stats = unit.get("Stats") or {}
+        # The schedule also contains youth, promotional and para pre-programme
+        # events. DiamondId marks the actual Diamond League disciplines.
+        if not isinstance(stats, dict) or not stats.get("DiamondId"):
+            continue
+
+        name = _norm(str(unit.get("EventName") or unit.get("EventNameShort") or ""))
+        start_ms = unit.get("StartTime")
+        end_ms = unit.get("EndTime")
+        date_text = str(unit.get("Date") or "")
+
+        if not name or not isinstance(start_ms, (int, float)):
+            continue
+
+        try:
+            start_utc = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            continue
+
+        # Swiss Timing StartTime/EndTime are Unix epoch milliseconds, i.e.
+        # absolute UTC instants. Date is used as a sanity check in venue time.
+        local_start = start_utc.astimezone(tz)
+        if DATE_RE.match(date_text) and local_start.date().isoformat() != date_text:
+            continue
+
+        end_local = None
+        if isinstance(end_ms, (int, float)):
+            try:
+                end_local = datetime.fromtimestamp(end_ms / 1000, timezone.utc).astimezone(tz)
+            except (ValueError, OSError, OverflowError):
+                end_local = None
+
+        result.append((name, local_start, end_local))
+
+    return result
+
+def _make_event(meeting: dict, name: str, local_dt: datetime, source_url: str, end_local_dt: datetime | None = None) -> SportsEvent:
     if local_dt.tzinfo is None:
         local_dt = local_dt.replace(tzinfo=ZoneInfo(meeting["timezone"]))
     utc_dt = local_dt.astimezone(timezone.utc)
@@ -227,7 +280,7 @@ def _make_event(meeting: dict, name: str, local_dt: datetime, source_url: str) -
         competition="Wanda Diamond League",
         name=f"{clean_name} - {city}",
         start_datetime=utc_dt,
-        end_datetime=None,
+        end_datetime=end_local_dt.astimezone(timezone.utc) if end_local_dt else None,
         location=city,
         country=meeting["country"],
         source_url=source_url,
@@ -266,11 +319,6 @@ class DiamondLeagueScraper(BaseScraper):
                 meetings = [
                     m for m in meetings
                     if date(m["year"], m["month"], m["end_day"]) >= today_utc
-                ]
-                # Diagnostic run: only Brussels, so GitHub Action stays short.
-                meetings = [
-                    m for m in meetings
-                    if _meeting_key(m["city"]) == "brussels"
                 ]
 
                 links = page.locator("a").evaluate_all(
@@ -312,99 +360,15 @@ class DiamondLeagueScraper(BaseScraper):
                             or "socket.io" in lowered
                         )
 
-                    def on_request(request):
-                        if not _is_dl_data_url(request.url):
-                            return
-                        print(
-                            f"[DL-NET] REQUEST | {request.resource_type} | "
-                            f"{request.method} | {request.url}"
-                        )
-
-                    def on_websocket(ws):
-                        if not _is_dl_data_url(ws.url):
-                            return
-                        print(f"[DL-NET] WEBSOCKET | {ws.url}")
-
-                        def _print_ws(direction, payload):
-                            try:
-                                value = payload
-                                if isinstance(payload, bytes):
-                                    value = payload[:1200]
-                                else:
-                                    value = str(payload)[:1200]
-                                print(f"[DL-WS] {direction} | {value}")
-                            except Exception as exc:
-                                print(f"[DL-WS] {direction} | <unprintable: {exc}>")
-
-                        ws.on(
-                            "framesent",
-                            lambda payload: _print_ws("SENT", payload),
-                        )
-                        ws.on(
-                            "framereceived",
-                            lambda payload: _print_ws("RECV", payload),
-                        )
-
                     def on_response(response):
                         url = response.url
-                        if not _is_dl_data_url(url):
-                            return
-
                         ctype = (response.headers.get("content-type") or "").lower()
-                        try:
-                            resource_type = response.request.resource_type
-                        except Exception:
-                            resource_type = "unknown"
-                        print(
-                            f"[DL-NET] RESPONSE | {response.status} | "
-                            f"{resource_type} | {ctype} | {url}"
-                        )
-
-                        # Diagnostic: inspect the Swiss Timing JS bundle that decides
-                        # where schedule/results data are loaded from.
-                        if url.rstrip("/").endswith("/index.js"):
-                            try:
-                                bundle = response.text()
-                                print(f"[DL-BUNDLE] index.js chars={len(bundle)}")
-                                keywords = (
-                                    "fetch(",
-                                    "WebSocket",
-                                    "schedule",
-                                    "event=",
-                                    "profile",
-                                    ".json",
-                                    "api",
-                                    "graphql",
-                                    "socket",
-                                    "results",
-                                )
-                                lowered = bundle.lower()
-                                shown = set()
-                                for keyword in keywords:
-                                    needle = keyword.lower()
-                                    start = 0
-                                    hits = 0
-                                    while hits < 8:
-                                        pos = lowered.find(needle, start)
-                                        if pos < 0:
-                                            break
-                                        lo = max(0, pos - 180)
-                                        hi = min(len(bundle), pos + len(keyword) + 300)
-                                        snippet = bundle[lo:hi]
-                                        snippet = snippet.replace("\n", " ").replace("\r", " ")
-                                        snippet = " ".join(snippet.split())
-                                        if snippet not in shown:
-                                            shown.add(snippet)
-                                            print(
-                                                f"[DL-BUNDLE] {keyword}: "
-                                                f"{snippet[:700]}"
-                                            )
-                                            hits += 1
-                                        start = pos + len(needle)
-                            except Exception as exc:
-                                print(f"[DL-BUNDLE] could not read index.js: {exc}")
-
                         if "json" not in ctype:
+                            return
+                        if not (
+                            "swisstiming.com" in url.lower()
+                            or "sportresult.com" in url.lower()
+                        ):
                             return
                         try:
                             raw = response.body()
@@ -414,76 +378,10 @@ class DiamondLeagueScraper(BaseScraper):
                         except Exception:
                             return
 
-                        # Final targeted diagnostic: print only the schedule JSON
-                        # structure/content, capped so GitHub Actions logs stay usable.
-                        if "_SCHEDULE_JSON.JSON" in url.upper():
-                            try:
-                                print(
-                                    f"[DL-SCHEDULE] url={url} "
-                                    f"type={type(payload).__name__}"
-                                )
-                                if isinstance(payload, dict):
-                                    print(
-                                        "[DL-SCHEDULE] top_keys="
-                                        + repr(list(payload.keys())[:50])
-                                    )
-                                elif isinstance(payload, list):
-                                    print(
-                                        f"[DL-SCHEDULE] list_length={len(payload)}"
-                                    )
-
-                                # Print the schedule Units separately. The full
-                                # payload is ~200 KB and the useful timing fields
-                                # begin after ListEvent, so the generic dump truncates
-                                # before reaching them.
-                                try:
-                                    units = (
-                                        payload.get("content", {})
-                                        .get("full", {})
-                                        .get("Units", {})
-                                    ) if isinstance(payload, dict) else {}
-                                    print(
-                                        f"[DL-UNITS] count={len(units)}"
-                                    )
-                                    for unit_key, unit in list(units.items())[:12]:
-                                        compact_unit = json.dumps(
-                                            unit,
-                                            ensure_ascii=False,
-                                            separators=(",", ":"),
-                                        )
-                                        print(
-                                            f"[DL-UNIT] {unit_key} | "
-                                            f"{compact_unit[:4000]}"
-                                        )
-                                except Exception as exc:
-                                    print(f"[DL-UNITS] diagnostic failed: {exc}")
-
-                                pretty = json.dumps(
-                                    payload,
-                                    ensure_ascii=False,
-                                    indent=2,
-                                )
-                                max_chars = 30000
-                                print(
-                                    "[DL-SCHEDULE] payload="
-                                    + pretty[:max_chars]
-                                )
-                                if len(pretty) > max_chars:
-                                    print(
-                                        f"[DL-SCHEDULE] payload truncated "
-                                        f"({len(pretty)} chars total)"
-                                    )
-                            except Exception as exc:
-                                print(
-                                    f"[DL-SCHEDULE] diagnostic failed: {exc}"
-                                )
-
                         payloads.append(payload)
                         response_urls.append(url)
 
-                    page.on("request", on_request)
                     page.on("response", on_response)
-                    page.on("websocket", on_websocket)
                     try:
                         page.goto(programme_url, wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(10000)
@@ -500,16 +398,23 @@ class DiamondLeagueScraper(BaseScraper):
                     except Exception as exc:
                         print(f"diamondleague {meeting['city']}: load error: {exc}")
                     finally:
-                        page.remove_listener("request", on_request)
                         page.remove_listener("response", on_response)
-                        page.remove_listener("websocket", on_websocket)
 
                     parsed = []
                     for payload in payloads:
-                        parsed.extend(_walk_schedule(payload, meeting))
+                        parsed.extend(_extract_swiss_timing_units(payload, meeting))
+
+                    # Fallback for a future Swiss Timing schema that still exposes
+                    # ordinary string date/time fields.
+                    if not parsed:
+                        for payload in payloads:
+                            parsed.extend(
+                                (name, local_dt, None)
+                                for name, local_dt in _walk_schedule(payload, meeting)
+                            )
 
                     seen = set()
-                    for name, local_dt in parsed:
+                    for name, local_dt, end_local_dt in parsed:
                         # Restrict accidental matches to the meeting's own date span.
                         local_date = local_dt.astimezone(ZoneInfo(meeting["timezone"])).date()
                         first = date(meeting["year"], meeting["month"], meeting["day"])
@@ -520,7 +425,7 @@ class DiamondLeagueScraper(BaseScraper):
                         if dedupe in seen:
                             continue
                         seen.add(dedupe)
-                        events.append(_make_event(meeting, name, local_dt, programme_url))
+                        events.append(_make_event(meeting, name, local_dt, programme_url, end_local_dt))
 
                     if not parsed:
                         print(
