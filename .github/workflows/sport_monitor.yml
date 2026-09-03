@@ -27,11 +27,16 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install requests beautifulsoup4
+
+      - name: Probe TV sources
+        run: |
+          python tv_probe.py
 
       - name: Run Sport monitor
         env:
