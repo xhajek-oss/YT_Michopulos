@@ -62,7 +62,10 @@ class IdnesTVScraper:
         request = Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; SportsEventsScraper/1.0)",
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+                ),
                 "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.7",
             },
         )
@@ -142,6 +145,16 @@ class IdnesTVScraper:
         description = " ".join(kept)
         return description[:1000] if description else None
 
+    @staticmethod
+    def _detail_link_count(html: str, page_url: str = BASE_URL) -> int:
+        soup = BeautifulSoup(html, "html.parser")
+        count = 0
+        for anchor in soup.find_all("a", href=True):
+            href = urljoin(page_url, anchor["href"])
+            if IdnesTVScraper._source_id(href) and IdnesTVScraper._detail_parts(href):
+                count += 1
+        return count
+
     def parse_search_html(self, html: str, page_url: str = BASE_URL) -> list[ParsedSchedule]:
         soup = BeautifulSoup(html, "html.parser")
         parsed: list[ParsedSchedule] = []
@@ -214,7 +227,20 @@ class IdnesTVScraper:
                 break
             visited.add(url)
             html = self._fetch_html(url)
-            yield from self.parse_search_html(html, url)
+            detail_links = self._detail_link_count(html, url)
+            parsed = self.parse_search_html(html, url)
+            print(
+                f"[IDNES] query={query!r} page={url} html={len(html)} "
+                f"detail_links={detail_links} parsed={len(parsed)}"
+            )
+            if detail_links == 0:
+                title = BeautifulSoup(html, "html.parser").title
+                title_text = title.get_text(" ", strip=True) if title else "<no-title>"
+                raise RuntimeError(
+                    "iDNES returned HTML without programme detail links "
+                    f"for query {query!r}; title={title_text!r}, html_len={len(html)}"
+                )
+            yield from parsed
             url = self._next_page_url(html, url)
 
     def scrape(self) -> list[TVProgram]:
