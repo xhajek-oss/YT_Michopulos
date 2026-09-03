@@ -16,6 +16,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Restore validation baseline
+        uses: actions/cache@v4
+        with:
+          path: data/validation_state.json
+          key: validation-state-${{ github.run_id }}
+          restore-keys: |
+            validation-state-
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
