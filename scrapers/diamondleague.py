@@ -267,6 +267,11 @@ class DiamondLeagueScraper(BaseScraper):
                     m for m in meetings
                     if date(m["year"], m["month"], m["end_day"]) >= today_utc
                 ]
+                # Diagnostic run: only Brussels, so GitHub Action stays short.
+                meetings = [
+                    m for m in meetings
+                    if _meeting_key(m["city"]) == "brussels"
+                ]
 
                 links = page.locator("a").evaluate_all(
                     """els => els.map(a => ({
@@ -298,6 +303,19 @@ class DiamondLeagueScraper(BaseScraper):
                     payloads = []
                     response_urls = []
 
+                    def on_request(request):
+                        if not _is_swiss_timing_url(request.url):
+                            return
+                        print(
+                            f"[DL-NET] REQUEST | {request.resource_type} | "
+                            f"{request.method} | {request.url}"
+                        )
+
+                    def on_websocket(ws):
+                        if not _is_swiss_timing_url(ws.url):
+                            return
+                        print(f"[DL-NET] WEBSOCKET | {ws.url}")
+
                     def on_response(response):
                         url = response.url
                         if not _is_swiss_timing_url(url):
@@ -315,10 +333,12 @@ class DiamondLeagueScraper(BaseScraper):
                         payloads.append(payload)
                         response_urls.append(url)
 
+                    page.on("request", on_request)
                     page.on("response", on_response)
+                    page.on("websocket", on_websocket)
                     try:
                         page.goto(programme_url, wait_until="domcontentloaded", timeout=45000)
-                        page.wait_for_timeout(2500)
+                        page.wait_for_timeout(6000)
 
                         # If the embedded app has not requested its data yet,
                         # navigate directly to the Swiss Timing iframe once.
@@ -328,11 +348,13 @@ class DiamondLeagueScraper(BaseScraper):
                         swiss_urls = [u for u in iframe_urls if _is_swiss_timing_url(u)]
                         if swiss_urls and not payloads:
                             page.goto(swiss_urls[0], wait_until="domcontentloaded", timeout=45000)
-                            page.wait_for_timeout(2500)
+                            page.wait_for_timeout(6000)
                     except Exception as exc:
                         print(f"diamondleague {meeting['city']}: load error: {exc}")
                     finally:
+                        page.remove_listener("request", on_request)
                         page.remove_listener("response", on_response)
+                        page.remove_listener("websocket", on_websocket)
 
                     parsed = []
                     for payload in payloads:
