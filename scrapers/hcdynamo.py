@@ -10,7 +10,8 @@ from .base import BaseScraper
 
 
 SOURCE_URL = "https://www.hcdynamo.cz/matches/MUZ"
-PRAGUE_TZ = ZoneInfo("Europe/Prague")
+LOCAL_TZ_NAME = "Europe/Prague"
+LOCAL_TZ = ZoneInfo(LOCAL_TZ_NAME)
 
 DATE_RE = re.compile(
     r"(?:po|út|st|čt|pá|so|ne)\s+"
@@ -21,12 +22,8 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
-ROUND_RE = re.compile(r"^(?:\d+\.\s*kolo|přát\.|Red Bulls Salute)\b", re.IGNORECASE)
-
 
 class _ListItemParser(HTMLParser):
-    """Collect text and image alt attributes for each <li> element."""
-
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.depth = 0
@@ -61,17 +58,10 @@ class _ListItemParser(HTMLParser):
 
 def _clean_team_name(alt: str) -> str:
     alt = alt.strip()
-    if alt.lower().startswith("logo "):
-        return alt[5:].strip()
-    return alt
+    return alt[5:].strip() if alt.lower().startswith("logo ") else alt
 
 
 def _competition_from_text(text: str) -> str:
-    """
-    HC Dynamo list items start with values such as:
-    '1. kolo Liga Mistrů' or 'přát. Přípravná utkání Dynama A'.
-    We remove the round marker and keep the competition name.
-    """
     cleaned = " ".join(text.split())
 
     match = re.match(r"^\d+\.\s*kolo\s+(.+)$", cleaned, re.IGNORECASE)
@@ -99,39 +89,35 @@ def _parse_event_item(item) -> SportsEvent | None:
         if name and name not in teams:
             teams.append(name)
 
-    # A match must contain exactly/at least two distinct team logos.
     if len(teams) < 2:
         return None
 
     home, away = teams[0], teams[1]
+    competition = _competition_from_text(text[:match.start()].strip(" -|"))
 
-    # Competition text is the part before the date.
-    prefix = text[:match.start()].strip(" -|")
-    competition = _competition_from_text(prefix)
-
-    dt = datetime(
+    local_dt = datetime(
         int(match.group("year")),
         int(match.group("month")),
         int(match.group("day")),
         int(match.group("hour")),
         int(match.group("minute")),
-        tzinfo=PRAGUE_TZ,
+        tzinfo=LOCAL_TZ,
     )
-
-    source_id = f"{dt:%Y%m%d%H%M}-{home}-{away}"
+    utc_dt = local_dt.astimezone(timezone.utc)
 
     return SportsEvent(
         source="hcdynamo",
-        source_id=source_id,
+        source_id=f"{local_dt:%Y%m%d%H%M}-{home}-{away}",
         sport="ice_hockey",
         competition=competition,
         name=f"{home} - {away}",
-        start_datetime=dt,
+        start_datetime=utc_dt,
         end_datetime=None,
         location=None,
         country="CZ",
         source_url=SOURCE_URL,
         discovered_at=datetime.now(timezone.utc),
+        timezone=LOCAL_TZ_NAME,
     )
 
 
@@ -141,12 +127,7 @@ class HCDynamoScraper(BaseScraper):
     def scrape(self) -> Iterable[SportsEvent]:
         request = Request(
             SOURCE_URL,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; SportsEventsScraper/1.0; "
-                    "+https://github.com/)"
-                )
-            },
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SportsEventsScraper/1.0)"},
         )
 
         with urlopen(request, timeout=30) as response:
@@ -162,19 +143,14 @@ class HCDynamoScraper(BaseScraper):
             event = _parse_event_item(item)
             if event is None:
                 continue
-
             key = (event.start_datetime, event.name)
             if key in seen:
                 continue
-
             seen.add(key)
             events.append(event)
 
         if not events:
-            raise RuntimeError(
-                "HC Dynamo scraper returned 0 events. "
-                "The page structure may have changed."
-            )
+            raise RuntimeError("HC Dynamo scraper returned 0 events.")
 
         events.sort(key=lambda event: event.start_datetime)
         return events
