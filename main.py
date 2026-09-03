@@ -19,10 +19,17 @@ def main():
 
     try:
         total = 0
+        failed = []
 
         for scraper in scrapers:
             print(f"Scraping {scraper.source}...")
-            events = list(scraper.scrape())
+
+            try:
+                events = list(scraper.scrape())
+            except Exception as exc:
+                failed.append((scraper.source, str(exc)))
+                print(f"{scraper.source}: ERROR: {exc}")
+                continue
 
             for event in events:
                 storage.upsert(event)
@@ -37,6 +44,11 @@ def main():
                 )
 
         print(f"Done. Total events processed: {total}")
+
+        if failed:
+            print("Sources with errors:")
+            for source, error in failed:
+                print(f"  {source}: {error}")
     finally:
         storage.close()
 
