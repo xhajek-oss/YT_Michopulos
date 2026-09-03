@@ -432,6 +432,32 @@ class DiamondLeagueScraper(BaseScraper):
                                         f"[DL-SCHEDULE] list_length={len(payload)}"
                                     )
 
+                                # Print the schedule Units separately. The full
+                                # payload is ~200 KB and the useful timing fields
+                                # begin after ListEvent, so the generic dump truncates
+                                # before reaching them.
+                                try:
+                                    units = (
+                                        payload.get("content", {})
+                                        .get("full", {})
+                                        .get("Units", {})
+                                    ) if isinstance(payload, dict) else {}
+                                    print(
+                                        f"[DL-UNITS] count={len(units)}"
+                                    )
+                                    for unit_key, unit in list(units.items())[:12]:
+                                        compact_unit = json.dumps(
+                                            unit,
+                                            ensure_ascii=False,
+                                            separators=(",", ":"),
+                                        )
+                                        print(
+                                            f"[DL-UNIT] {unit_key} | "
+                                            f"{compact_unit[:4000]}"
+                                        )
+                                except Exception as exc:
+                                    print(f"[DL-UNITS] diagnostic failed: {exc}")
+
                                 pretty = json.dumps(
                                     payload,
                                     ensure_ascii=False,
