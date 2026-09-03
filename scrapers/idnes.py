@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -106,6 +107,33 @@ class IdnesTVScraper:
             return page.content()
         finally:
             page.close()
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        value = unicodedata.normalize("NFKD", value.casefold())
+        value = "".join(ch for ch in value if not unicodedata.combining(ch))
+        value = re.sub(r"[^a-z0-9]+", " ", value)
+        return " ".join(value.split())
+
+    @classmethod
+    def _is_query_relevant(cls, query: str, title: str) -> bool:
+        q = cls._normalize_text(query)
+        t = cls._normalize_text(title)
+
+        aliases = {
+            "atletika": (
+                "atletika", "athletics", "diamantova liga",
+                "world athletics", "mcr v atletice",
+            ),
+            "biatlon": ("biatlon", "biathlon"),
+            "hokej": (
+                "hokej", "ice hockey", "elh", "extraliga",
+                "maxa liga", "tipsport extraliga", "nhl",
+                "buly", "studio hokej",
+            ),
+        }
+        terms = aliases.get(q, (q,))
+        return any(cls._normalize_text(term) in t for term in terms)
 
     @staticmethod
     def _source_id(url: str) -> Optional[str]:
@@ -292,13 +320,21 @@ class IdnesTVScraper:
                     "iDNES returned HTML without programme detail links "
                     f"for query {query!r}; title={title_text!r}, html_len={len(html)}"
                 )
-            yield from parsed
+            relevant = [item for item in parsed if self._is_query_relevant(query, item.title)]
+            filtered = len(parsed) - len(relevant)
+            if filtered:
+                print(
+                    f"[IDNES] query={query!r} filtered_irrelevant={filtered} "
+                    f"kept={len(relevant)}"
+                )
+            yield from relevant
             url = self._next_page_url(html, url)
 
     def scrape(self) -> list[TVProgram]:
         discovered_at = datetime.now(timezone.utc)
         programs: list[TVProgram] = []
-        seen: set[tuple[str, datetime, str]] = set()
+        seen_ids: set[tuple[str, datetime, str]] = set()
+        seen_broadcasts: set[tuple[str, str, datetime]] = set()
 
         try:
             for query in self.search_queries:
@@ -306,10 +342,16 @@ class IdnesTVScraper:
                     channel = self.channels[item.channel_slug]
                     start_utc = item.start_local.astimezone(timezone.utc)
                     end_utc = item.end_local.astimezone(timezone.utc)
-                    key = (item.source_id, start_utc, channel)
-                    if key in seen:
+                    id_key = (item.source_id, start_utc, channel)
+                    broadcast_key = (
+                        channel,
+                        self._normalize_text(item.title),
+                        start_utc,
+                    )
+                    if id_key in seen_ids or broadcast_key in seen_broadcasts:
                         continue
-                    seen.add(key)
+                    seen_ids.add(id_key)
+                    seen_broadcasts.add(broadcast_key)
                     programs.append(
                         TVProgram(
                             source=self.source,
