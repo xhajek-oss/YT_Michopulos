@@ -26,10 +26,6 @@ CT_ATHLETICS_URL = (
     "https://www.ceskatelevize.cz/tv-program/Atletika/"
 )
 
-ONEPLAY_HOCKEY_URL = (
-    "https://www.oneplay.cz/sport/hokej"
-)
-
 CONFIG_FILE = "sport_config.json"
 STATE_FILE = "data/sport_state.json"
 
@@ -98,8 +94,12 @@ def save_json(filename, data):
 # =========================================================
 
 def normalize_text(text):
+    if not text:
+        return ""
+
     text = text.replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
 
 
@@ -184,17 +184,20 @@ def is_oneplay_sport(channel):
 
 
 # =========================================================
-# DYNAMO
+# DYNAMO - DATE
 # =========================================================
 
 def extract_date_time(text):
     patterns = [
-        r"\b(?:po|út|ut|st|čt|ct|pá|pa|so|ne)\s+"
-        r"(\d{1,2}).\s*(\d{1,2}).\s*(\d{4})"
-        r"[,\s]+(\d{1,2}):(\d{2})",
-
-        r"\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})"
-        r"[,\s]+(\d{1,2}):(\d{2})",
+        (
+            r"\b(?:po|út|ut|st|čt|ct|pá|pa|so|ne)\s+"
+            r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})"
+            r"[,\s|]+(\d{1,2}):(\d{2})"
+        ),
+        (
+            r"\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})"
+            r"[,\s|]+(\d{1,2}):(\d{2})"
+        ),
     ]
 
     for pattern in patterns:
@@ -228,6 +231,160 @@ def extract_date_time(text):
     return None
 
 
+# =========================================================
+# DYNAMO - TEAM EXTRACTION
+# =========================================================
+
+DYNAMO_OPPONENTS = [
+    "GKS Tychy",
+    "Rögle BK",
+    "Rogle BK",
+    "Växjö Lakers",
+    "Vaxjo Lakers",
+    "SaiPa Lappeenranta",
+    "SaiPa",
+    "KooKoo Kouvola",
+    "KooKoo",
+    "Bordeaux Boxers",
+    "Bordeaux",
+    "Mountfield HK",
+    "Hradec Králové",
+    "HC Sparta Praha",
+    "HC Kometa Brno",
+    "HC Škoda Plzeň",
+    "Bílí Tygři Liberec",
+    "HC Oceláři Třinec",
+    "Oceláři Třinec",
+    "HC Vítkovice Ridera",
+    "BK Mladá Boleslav",
+    "HC Olomouc",
+    "HC Energie Karlovy Vary",
+    "Rytíři Kladno",
+    "Motor České Budějovice",
+    "Dukla Jihlava",
+    "HC Verva Litvínov",
+    "HC Litvínov",
+    "Vlci Žilina",
+    "EHC Biel",
+    "Red Bull München",
+    "Red Bull Munchen",
+    "EV Landshut",
+    "Löwen Frankfurt",
+    "Lowen Frankfurt",
+    "HC Slovan Bratislava",
+]
+
+
+def clean_dynamo_text(text):
+    text = normalize_text(text)
+
+    noise = [
+        "Image:",
+        "Image",
+        "Logo",
+        "logo",
+    ]
+
+    for item in noise:
+        text = text.replace(item, " ")
+
+    text = re.sub(
+        r"\b(?:VS|vs|Vs)\b",
+        " VS ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def find_dynamo_opponent(nearby):
+    cleaned = clean_dynamo_text(nearby)
+
+    # -----------------------------------------------------
+    # Nejprve hledáme známé soupeře.
+    # -----------------------------------------------------
+
+    for opponent in DYNAMO_OPPONENTS:
+        if opponent.lower() in cleaned.lower():
+            return opponent
+
+    # -----------------------------------------------------
+    # Dynamo VS soupeř
+    # -----------------------------------------------------
+
+    patterns = [
+        r"HC Dynamo Pardubice\s+VS\s+"
+        r"([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]"
+        r"[A-Za-zÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž"
+        r"0-9 .&'()\-]+?)"
+        r"(?=\s+(?:Reportáž|Online|"
+        r"(?:po|út|ut|st|čt|ct|pá|pa|so|ne)\s+"
+        r"\d{1,2}\.))",
+
+        r"([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]"
+        r"[A-Za-zÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž"
+        r"0-9 .&'()\-]+?)"
+        r"\s+VS\s+HC Dynamo Pardubice"
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            cleaned,
+            re.IGNORECASE,
+        )
+
+        if match:
+            opponent = normalize_text(
+                match.group(1)
+            )
+
+            opponent = re.sub(
+                r"\b(?:Reportáž|Online)\b.*$",
+                "",
+                opponent,
+                flags=re.IGNORECASE,
+            )
+
+            opponent = opponent.strip(
+                " ,.-"
+            )
+
+            if opponent:
+                return opponent
+
+    return None
+
+
+def find_dynamo_competition(nearby):
+    text = normalize_text(nearby)
+
+    competitions = [
+        "Liga Mistrů",
+        "Liga mistrů",
+        "Tipsport extraliga",
+        "Přípravná utkání Dynama A",
+        "Přípravná utkání",
+        "Red Bulls Salute",
+    ]
+
+    for competition in competitions:
+        if competition.lower() in text.lower():
+            return competition
+
+    return "HC Dynamo Pardubice"
+
+
+# =========================================================
+# DYNAMO
+# =========================================================
+
 def parse_dynamo_matches():
     print()
     print("=== DYNAMO PARDUBICE ===")
@@ -246,90 +403,160 @@ def parse_dynamo_matches():
         "html.parser",
     )
 
+    # -----------------------------------------------------
+    # Vytvoříme text nejen z HTML textu,
+    # ale také z ALT atributů obrázků.
+    #
+    # Nový web Dynama má názvy týmů v obrázcích:
+    # Logo HC Dynamo Pardubice
+    # Logo GKS Tychy
+    # -----------------------------------------------------
+
+    parts = []
+
+    visible_text = soup.get_text(
+        " ",
+        strip=True,
+    )
+
+    if visible_text:
+        parts.append(visible_text)
+
+    for image in soup.find_all("img"):
+        alt = image.get("alt")
+
+        if alt:
+            parts.append(alt)
+
+    combined_text = normalize_text(
+        " ".join(parts)
+    )
+
+    combined_text = combined_text.replace(
+        "Image:",
+        " ",
+    )
+
+    combined_text = combined_text.replace(
+        "Logo",
+        " ",
+    )
+
+    combined_text = normalize_text(
+        combined_text
+    )
+
+    # -----------------------------------------------------
+    # Hledáme všechna data zápasů.
+    # -----------------------------------------------------
+
+    date_pattern = re.compile(
+        r"\b(?:po|út|ut|st|čt|ct|pá|pa|so|ne)\s+"
+        r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}"
+        r"[,\s|]+\d{1,2}:\d{2}",
+        re.IGNORECASE,
+    )
+
+    dates = list(
+        date_pattern.finditer(
+            combined_text
+        )
+    )
+
+    print(
+        f"Datumové bloky: {len(dates)}"
+    )
+
     matches = []
 
-    # -----------------------------------------------------
-    # JSON-LD
-    # -----------------------------------------------------
-
-    for script in soup.find_all(
-        "script",
-        attrs={"type": "application/ld+json"},
-    ):
-        raw = script.string
-
-        if not raw:
-            continue
-
-        try:
-            data = json.loads(raw)
-        except Exception:
-            continue
-
-        objects = (
-            data
-            if isinstance(data, list)
-            else [data]
+    for date_match in dates:
+        dt = extract_date_time(
+            date_match.group(0)
         )
 
-        for obj in objects:
-            if not isinstance(obj, dict):
-                continue
+        if not dt:
+            continue
 
-            start_date = obj.get("startDate")
-            name = obj.get("name", "")
+        # -------------------------------------------------
+        # Vezmeme dostatečně velké okolí.
+        # -------------------------------------------------
 
-            if not start_date or not name:
-                continue
+        start = max(
+            0,
+            date_match.start() - 700,
+        )
 
-            if "dynamo" not in name.lower():
-                continue
+        end = min(
+            len(combined_text),
+            date_match.end() + 700,
+        )
 
-            try:
-                dt = datetime.fromisoformat(
-                    start_date.replace(
-                        "Z",
-                        "+00:00",
-                    )
-                )
+        nearby = combined_text[
+            start:end
+        ]
 
-                if dt.tzinfo is None:
-                    dt = dt.replace(
-                        tzinfo=TIMEZONE
-                    )
-                else:
-                    dt = dt.astimezone(
-                        TIMEZONE
-                    )
+        if (
+            "dynamo pardubice"
+            not in nearby.lower()
+        ):
+            continue
 
-            except Exception:
-                continue
+        opponent = find_dynamo_opponent(
+            nearby
+        )
 
-            parts = re.split(
-                r"\s+(?:vs\.?|–|-|—)\s+",
-                name,
-                flags=re.IGNORECASE,
+        if not opponent:
+            print(
+                "Dynamo: soupeř nenalezen "
+                f"pro {dt.strftime('%d.%m.%Y %H:%M')}"
             )
+            continue
 
-            if len(parts) != 2:
-                continue
+        competition = find_dynamo_competition(
+            nearby
+        )
 
-            matches.append(
-                {
-                    "sport": "hockey",
-                    "competition": (
-                        "HC Dynamo Pardubice"
-                    ),
-                    "home": normalize_text(parts[0]),
-                    "away": normalize_text(parts[1]),
-                    "datetime": dt,
-                    "tv_channel": None,
-                    "tv_confirmed": False,
-                }
-            )
+        # -------------------------------------------------
+        # Určení domácího/venkovního zápasu.
+        # -------------------------------------------------
+
+        cleaned = clean_dynamo_text(
+            nearby
+        )
+
+        dynamo_pos = cleaned.lower().find(
+            "hc dynamo pardubice"
+        )
+
+        opponent_pos = cleaned.lower().find(
+            opponent.lower()
+        )
+
+        if (
+            dynamo_pos >= 0
+            and opponent_pos >= 0
+            and dynamo_pos < opponent_pos
+        ):
+            home = "HC Dynamo Pardubice"
+            away = opponent
+        else:
+            home = opponent
+            away = "HC Dynamo Pardubice"
+
+        matches.append(
+            {
+                "sport": "hockey",
+                "competition": competition,
+                "home": home,
+                "away": away,
+                "datetime": dt,
+                "tv_channel": None,
+                "tv_confirmed": False,
+            }
+        )
 
     # -----------------------------------------------------
-    # Text fallback
+    # Záložní parser pro případ, že se změní HTML.
     # -----------------------------------------------------
 
     if not matches:
@@ -340,40 +567,49 @@ def parse_dynamo_matches():
             )
         )
 
-        date_pattern = re.compile(
-            r"\b(?:po|út|ut|st|čt|ct|pá|pa|so|ne)\s+"
-            r"\d{1,2}\.\s*\d{1,2}\.\s*\d{4}"
-            r"[,\s]+\d{1,2}:\d{2}",
+        # Přidáme ALT názvy týmů.
+        for image in soup.find_all("img"):
+            alt = image.get("alt")
+
+            if alt:
+                text += " " + alt
+
+        text = normalize_text(text)
+
+        date_pattern_fallback = re.compile(
+            r"\b(\d{1,2})\.\s*"
+            r"(\d{1,2})\.\s*"
+            r"(\d{4})"
+            r"[,\s|]+"
+            r"(\d{1,2}):(\d{2})",
             re.IGNORECASE,
         )
 
-        dates = list(
-            date_pattern.finditer(text)
-        )
-
-        print(
-            f"Datumové bloky: {len(dates)}"
-        )
-
-        for date_match in dates:
-            dt = extract_date_time(
-                date_match.group(0)
-            )
-
-            if not dt:
+        for match in date_pattern_fallback.finditer(
+            text
+        ):
+            try:
+                dt = datetime(
+                    int(match.group(3)),
+                    int(match.group(2)),
+                    int(match.group(1)),
+                    int(match.group(4)),
+                    int(match.group(5)),
+                    tzinfo=TIMEZONE,
+                )
+            except Exception:
                 continue
 
-            start = max(
-                0,
-                date_match.start() - 400,
-            )
-
-            end = min(
-                len(text),
-                date_match.end() + 600,
-            )
-
-            nearby = text[start:end]
+            nearby = text[
+                max(
+                    0,
+                    match.start() - 1000,
+                ):
+                min(
+                    len(text),
+                    match.end() + 1000,
+                )
+            ]
 
             if (
                 "dynamo pardubice"
@@ -381,77 +617,22 @@ def parse_dynamo_matches():
             ):
                 continue
 
-            candidate = nearby
-
-            team_patterns = [
-                r"Dynamo Pardubice\s+"
-                r"(?:VS|vs|–|-|—)\s+"
-                r"([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ"
-                r"a-záčďéěíňóřšťúůýž"
-                r"0-9 .&'-]+)",
-
-                r"([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ"
-                r"a-záčďéěíňóřšťúůýž"
-                r"0-9 .&'-]+)\s+"
-                r"(?:VS|vs|–|-|—)\s+"
-                r"Dynamo Pardubice",
-            ]
-
-            opponent = None
-
-            for pattern in team_patterns:
-                m = re.search(
-                    pattern,
-                    candidate,
-                )
-
-                if m:
-                    opponent = normalize_text(
-                        m.group(1)
-                    )
-                    break
-
-            if not opponent:
-                known_opponents = [
-                    "GKS Tychy",
-                    "Rögle BK",
-                    "Växjö Lakers",
-                    "Vaxjo Lakers",
-                    "KooKoo",
-                    "SaiPa",
-                    "Bordeaux",
-                    "Hradec Králové",
-                    "Mountfield HK",
-                    "HC Sparta Praha",
-                    "HC Kometa Brno",
-                    "HC Škoda Plzeň",
-                    "Bílí Tygři Liberec",
-                    "Oceláři Třinec",
-                    "HC Vítkovice Ridera",
-                    "BK Mladá Boleslav",
-                    "HC Olomouc",
-                    "HC Energie Karlovy Vary",
-                    "Rytíři Kladno",
-                    "Motor České Budějovice",
-                    "Dukla Jihlava",
-                    "HC Litvínov",
-                ]
-
-                for known in known_opponents:
-                    if known.lower() in candidate.lower():
-                        opponent = known
-                        break
+            opponent = find_dynamo_opponent(
+                nearby
+            )
 
             if not opponent:
                 continue
 
+            competition = find_dynamo_competition(
+                nearby
+            )
+
             matches.append(
                 {
                     "sport": "hockey",
-                    "competition": (
-                        "HC Dynamo Pardubice"
-                    ),
-                    "home": "Dynamo Pardubice",
+                    "competition": competition,
+                    "home": "HC Dynamo Pardubice",
                     "away": opponent,
                     "datetime": dt,
                     "tv_channel": None,
@@ -459,7 +640,9 @@ def parse_dynamo_matches():
                 }
             )
 
-    matches = deduplicate_matches(matches)
+    matches = deduplicate_matches(
+        matches
+    )
 
     print(
         f"Výsledných zápasů Dynamo: "
@@ -474,6 +657,8 @@ def parse_dynamo_matches():
             event["home"],
             "vs",
             event["away"],
+            "|",
+            event["competition"],
         )
 
     return matches
@@ -487,8 +672,12 @@ def deduplicate_matches(matches):
 
         key = (
             dt.strftime("%Y-%m-%d %H:%M"),
-            normalize_team_name(event["home"]),
-            normalize_team_name(event["away"]),
+            normalize_team_name(
+                event["home"]
+            ),
+            normalize_team_name(
+                event["away"]
+            ),
         )
 
         result[key] = event
@@ -497,7 +686,7 @@ def deduplicate_matches(matches):
 
 
 # =========================================================
-# TV SEARCH
+# GOOGLE SEARCH
 # =========================================================
 
 def google_search(
@@ -591,8 +780,9 @@ def verify_oneplay(event):
         )
         return None
 
-    channel = channel_match.group(1)
-    channel = normalize_text(channel)
+    channel = normalize_text(
+        channel_match.group(1)
+    )
 
     if not is_oneplay_sport(channel):
         return None
@@ -951,18 +1141,24 @@ def parse_athletics():
         "html.parser",
     )
 
-    text = normalize_text(
+    parts = [
         soup.get_text(
             " ",
             strip=True,
         )
+    ]
+
+    for image in soup.find_all("img"):
+        alt = image.get("alt")
+
+        if alt:
+            parts.append(alt)
+
+    text = normalize_text(
+        " ".join(parts)
     )
 
     events = []
-
-    # -----------------------------------------------------
-    # Hledání dat v oficiálním kalendáři
-    # -----------------------------------------------------
 
     date_patterns = [
         re.compile(
@@ -983,60 +1179,55 @@ def parse_athletics():
     for pattern in date_patterns:
         for match in pattern.finditer(text):
             try:
-                if match.lastindex == 3:
-                    if match.group(2).isalpha():
-                        month_names = {
-                            "jan": 1,
-                            "feb": 2,
-                            "mar": 3,
-                            "apr": 4,
-                            "may": 5,
-                            "jun": 6,
-                            "jul": 7,
-                            "aug": 8,
-                            "sep": 9,
-                            "oct": 10,
-                            "nov": 11,
-                            "dec": 12,
-                        }
+                if match.group(2).isalpha():
+                    month_names = {
+                        "jan": 1,
+                        "feb": 2,
+                        "mar": 3,
+                        "apr": 4,
+                        "may": 5,
+                        "jun": 6,
+                        "jul": 7,
+                        "aug": 8,
+                        "sep": 9,
+                        "oct": 10,
+                        "nov": 11,
+                        "dec": 12,
+                    }
 
-                        month = month_names[
-                            match.group(2).lower()
-                        ]
+                    month = month_names[
+                        match.group(2).lower()
+                    ]
 
-                        dt = datetime(
-                            int(match.group(3)),
-                            month,
-                            int(match.group(1)),
-                            12,
-                            0,
-                            tzinfo=TIMEZONE,
-                        )
-                    else:
-                        dt = datetime(
-                            int(match.group(3)),
-                            int(match.group(2)),
-                            int(match.group(1)),
-                            12,
-                            0,
-                            tzinfo=TIMEZONE,
-                        )
-
-                    found_dates.append(
-                        (
-                            match.start(),
-                            match.end(),
-                            dt,
-                        )
+                    dt = datetime(
+                        int(match.group(3)),
+                        month,
+                        int(match.group(1)),
+                        12,
+                        0,
+                        tzinfo=TIMEZONE,
                     )
+
+                else:
+                    dt = datetime(
+                        int(match.group(3)),
+                        int(match.group(2)),
+                        int(match.group(1)),
+                        12,
+                        0,
+                        tzinfo=TIMEZONE,
+                    )
+
+                found_dates.append(
+                    (
+                        match.start(),
+                        match.end(),
+                        dt,
+                    )
+                )
 
             except Exception:
                 continue
-
-    # -----------------------------------------------------
-    # Pro každý nalezený datum zkusíme najít
-    # okolní název soutěže.
-    # -----------------------------------------------------
 
     for start, end, dt in found_dates:
         nearby_start = max(
@@ -1092,10 +1283,6 @@ def parse_athletics():
             }
         )
 
-    # -----------------------------------------------------
-    # Fallback: ČT atletický program
-    # -----------------------------------------------------
-
     if not events:
         try:
             html = get_url(
@@ -1125,7 +1312,9 @@ def parse_athletics():
                 f"ČT atletika chyba: {e}"
             )
 
-    events = deduplicate_matches(events)
+    events = deduplicate_matches(
+        events
+    )
 
     print(
         f"Vybraných atletických událostí: "
@@ -1158,11 +1347,21 @@ def parse_biathlon():
         "html.parser",
     )
 
-    text = normalize_text(
+    parts = [
         soup.get_text(
             " ",
             strip=True,
         )
+    ]
+
+    for image in soup.find_all("img"):
+        alt = image.get("alt")
+
+        if alt:
+            parts.append(alt)
+
+    text = normalize_text(
+        " ".join(parts)
     )
 
     events = []
@@ -1218,7 +1417,9 @@ def parse_biathlon():
                 }
             )
 
-    return deduplicate_matches(events)
+    return deduplicate_matches(
+        events
+    )
 
 
 # =========================================================
@@ -1232,14 +1433,11 @@ def get_sport_events(config):
         "dynamo_pardubice",
         False,
     ):
-        events.extend(
-            parse_dynamo_matches()
-        )
+        dynamo_events = parse_dynamo_matches()
 
-        # TV kontrolujeme pouze u Dynama.
         updated = []
 
-        for event in events:
+        for event in dynamo_events:
             if event["sport"] == "hockey":
                 updated.append(
                     verify_tv(event)
@@ -1247,7 +1445,7 @@ def get_sport_events(config):
             else:
                 updated.append(event)
 
-        events = updated
+        events.extend(updated)
 
     if config.get(
         "diamond_league",
@@ -1265,7 +1463,6 @@ def get_sport_events(config):
             parse_biathlon()
         )
 
-    # MS v hokeji zatím zůstává vypnuté.
     if config.get(
         "world_hockey_championship",
         False,
@@ -1306,6 +1503,11 @@ def format_event(event):
         f"📅 {dt.strftime('%Y-%m-%d')}",
         f"🕐 {dt.strftime('%H:%M')}",
     ]
+
+    if event.get("competition"):
+        lines.append(
+            f"🏆 {event['competition']}"
+        )
 
     if (
         event.get("tv_confirmed")
@@ -1581,6 +1783,7 @@ def main():
 
     print()
     print("Konfigurace:")
+
     print(
         json.dumps(
             config,
