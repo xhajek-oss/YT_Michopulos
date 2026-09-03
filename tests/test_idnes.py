@@ -1,3 +1,4 @@
+from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,3 +79,28 @@ def test_filters_non_allowlisted_channel_and_bad_neighbor_time(tmp_path):
     </div>
     """
     assert scraper.parse_search_html(html) == []
+
+
+def test_parse_search_html_real_idnes_sibling_layout(tmp_path):
+    config = tmp_path / "tv.yaml"
+    config.write_text(
+        """idnes:\n  timezone: Europe/Prague\n  channels:\n    ct-4-sport: \"ČT sport\"\n  search_queries: []\n""",
+        encoding="utf-8",
+    )
+    scraper = IdnesTVScraper(
+        config_path=str(config),
+        now=datetime(2026, 9, 3, 12, 0, tzinfo=ZoneInfo("Europe/Prague")),
+    )
+    html = """
+    <div class="result">
+      <span class="time">20:30 - 22:05</span>
+      <span class="date">Sobota 5.9.</span>
+      <h3><a href="/ct-4-sport/so-20.30-atletika-diamantova-liga-2026.id107986263">Atletika: Diamantová liga 2026</a></h3>
+      <p>Sport skryté titulky, stereo vysílání, High Definition, širokoúhlé</p>
+    </div>
+    """
+    items = scraper.parse_search_html(html)
+    assert len(items) == 1
+    assert items[0].source_id == "107986263"
+    assert items[0].start_local.isoformat() == "2026-09-05T20:30:00+02:00"
+    assert items[0].end_local.isoformat() == "2026-09-05T22:05:00+02:00"
