@@ -16,3 +16,4 @@ class SportsEvent:
     country: Optional[str]
     source_url: str
     discovered_at: datetime
+    timezone: Optional[str] = None
