@@ -416,7 +416,7 @@ class DiamondLeagueScraper(BaseScraper):
 
                         # Final targeted diagnostic: print only the schedule JSON
                         # structure/content, capped so GitHub Actions logs stay usable.
-                        if "_SCHEDULE_JSON.json" in url.upper():
+                        if "_SCHEDULE_JSON.JSON" in url.upper():
                             try:
                                 print(
                                     f"[DL-SCHEDULE] url={url} "
