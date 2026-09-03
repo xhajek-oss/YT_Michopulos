@@ -267,8 +267,27 @@ class IdnesTVScraper:
                 f"detail_links={detail_links} parsed={len(parsed)}"
             )
             if detail_links == 0:
-                title = BeautifulSoup(html, "html.parser").title
+                soup = BeautifulSoup(html, "html.parser")
+                title = soup.title
                 title_text = title.get_text(" ", strip=True) if title else "<no-title>"
+                body_text = " ".join(soup.stripped_strings)
+
+                # A valid iDNES search page can legitimately contain zero results
+                # (for example when a sport has no broadcasts in the current
+                # programme horizon).  The earlier HTTP fallback failure instead
+                # returned the generic iDNES homepage, whose title did not identify
+                # the TV-program search page.
+                is_tv_search_page = (
+                    "tv program idnes.cz" in title_text.casefold()
+                    and (
+                        "výsledky vyhledávání" in body_text.casefold()
+                        or "/hledani" in url
+                    )
+                )
+                if is_tv_search_page:
+                    print(f"[IDNES] query={query!r} no scheduled programmes -> OK")
+                    break
+
                 raise RuntimeError(
                     "iDNES returned HTML without programme detail links "
                     f"for query {query!r}; title={title_text!r}, html_len={len(html)}"
