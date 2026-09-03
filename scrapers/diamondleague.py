@@ -320,7 +320,53 @@ class DiamondLeagueScraper(BaseScraper):
                         url = response.url
                         if not _is_swiss_timing_url(url):
                             return
+
                         ctype = (response.headers.get("content-type") or "").lower()
+
+                        # Diagnostic: inspect the Swiss Timing JS bundle that decides
+                        # where schedule/results data are loaded from.
+                        if url.rstrip("/").endswith("/index.js"):
+                            try:
+                                bundle = response.text()
+                                print(f"[DL-BUNDLE] index.js chars={len(bundle)}")
+                                keywords = (
+                                    "fetch(",
+                                    "WebSocket",
+                                    "schedule",
+                                    "event=",
+                                    "profile",
+                                    ".json",
+                                    "api",
+                                    "graphql",
+                                    "socket",
+                                    "results",
+                                )
+                                lowered = bundle.lower()
+                                shown = set()
+                                for keyword in keywords:
+                                    needle = keyword.lower()
+                                    start = 0
+                                    hits = 0
+                                    while hits < 8:
+                                        pos = lowered.find(needle, start)
+                                        if pos < 0:
+                                            break
+                                        lo = max(0, pos - 180)
+                                        hi = min(len(bundle), pos + len(keyword) + 300)
+                                        snippet = bundle[lo:hi]
+                                        snippet = snippet.replace("\n", " ").replace("\r", " ")
+                                        snippet = " ".join(snippet.split())
+                                        if snippet not in shown:
+                                            shown.add(snippet)
+                                            print(
+                                                f"[DL-BUNDLE] {keyword}: "
+                                                f"{snippet[:700]}"
+                                            )
+                                            hits += 1
+                                        start = pos + len(needle)
+                            except Exception as exc:
+                                print(f"[DL-BUNDLE] could not read index.js: {exc}")
+
                         if "json" not in ctype:
                             return
                         try:
