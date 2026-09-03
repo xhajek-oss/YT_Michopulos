@@ -56,7 +56,17 @@ CALENDAR_RE = re.compile(
 #   18h42 Women's 100m
 # We intentionally require minutes so text such as "17h: Doors open" is ignored.
 TIME_RE = re.compile(
-    r"(?<!\d)(?P<hour>[01]?\d|2[0-3])(?:[:h.])(?P<minute>[0-5]\d)(?!\d)"
+    r"(?<!\\d)(?P<hour>[01]?\\d|2[0-3])"
+    r"(?:(?:[:.])(?P<minute_colon>[0-5]\\d)|h(?P<minute_h>[0-5]\\d)?)"
+    r"(?!\\d)",
+    re.IGNORECASE,
+)
+
+MAIN_PROGRAM_RE = re.compile(
+    r"(?<!\\d)(?P<hour>[01]?\\d|2[0-3])"
+    r"(?:(?:[:.])(?P<minute_colon>[0-5]\\d)|h(?P<minute_h>[0-5]\\d)?)"
+    r"\\s*:?\\s*(?:Main program|Main programme|Hoofdprogramma)",
+    re.IGNORECASE,
 )
 
 # Words that strongly suggest an actual athletics programme rather than
@@ -105,19 +115,25 @@ def _extract_calendar(text: str, year: int) -> list[dict]:
     return result
 
 
+def _match_time(match) -> tuple[int, int]:
+    minute = match.groupdict().get("minute_colon") or match.groupdict().get("minute_h") or "00"
+    return int(match.group("hour")), int(minute)
+
+
 def _extract_program_start(texts: list[str]) -> tuple[int, int] | None:
     """
-    Return the earliest plausible athletics competition time found in the
-    rendered meeting page or embedded timing frame.
-
-    A time is accepted only from a local text window containing an athletics
-    discipline marker. This avoids using doors-open, cookie, navigation, etc.
+    Prefer an explicitly published Main program time. If unavailable, use the
+    earliest concrete athletics-event time from the rendered page/frame.
     """
-    candidates = []
+    event_candidates = []
 
     for raw in texts:
         text = _norm(raw)
         lower = text.lower()
+
+        main = MAIN_PROGRAM_RE.search(text)
+        if main:
+            return _match_time(main)
 
         for match in TIME_RE.finditer(text):
             start = max(0, match.start() - 100)
@@ -127,17 +143,14 @@ def _extract_program_start(texts: list[str]) -> tuple[int, int] | None:
             if not any(marker in window for marker in ATHLETICS_MARKERS):
                 continue
 
-            hour = int(match.group("hour"))
-            minute = int(match.group("minute"))
+            hour, minute = _match_time(match)
 
-            # Elite DL programmes are normally daytime/evening. This also
-            # filters many unrelated page timestamps.
             if hour < 9:
                 continue
 
-            candidates.append((hour, minute))
+            event_candidates.append((hour, minute))
 
-    return min(candidates) if candidates else None
+    return min(event_candidates) if event_candidates else None
 
 
 def _make_event(meeting: dict, hour: int, minute: int, source_url: str) -> SportsEvent:
