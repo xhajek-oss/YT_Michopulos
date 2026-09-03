@@ -99,18 +99,30 @@ class IdnesTVScraper:
         return min(candidates, key=lambda d: abs((d - today).days))
 
     @staticmethod
-    def _smallest_schedule_container(anchor: Tag) -> Optional[Tag]:
-        """Find the smallest ancestor that contains both a date and a start-end range."""
-        node: Optional[Tag] = anchor
-        for _ in range(8):
-            if node is None:
+    def _schedule_metadata_before(anchor: Tag) -> tuple[Optional[re.Match[str]], Optional[re.Match[str]]]:
+        """Find the nearest time range and date rendered immediately before a result title.
+
+        iDNES search results are laid out in document order as:
+        ``time range -> date -> title link -> metadata``.  The time/date are siblings
+        (or cousins), not descendants of the title link's smallest container, so an
+        ancestor-only lookup silently drops every result.
+        """
+        time_match = None
+        date_match = None
+        inspected = 0
+        for node in anchor.previous_elements:
+            if inspected >= 40 or (time_match is not None and date_match is not None):
                 break
-            text = " ".join(node.stripped_strings)
-            if TIME_RANGE_RE.search(text) and DATE_RE.search(text):
-                return node
-            parent = node.parent
-            node = parent if isinstance(parent, Tag) else None
-        return None
+            if isinstance(node, str):
+                text = " ".join(node.split())
+                if not text:
+                    continue
+                inspected += 1
+                if date_match is None:
+                    date_match = DATE_RE.search(text)
+                if time_match is None:
+                    time_match = TIME_RANGE_RE.search(text)
+        return time_match, date_match
 
     @staticmethod
     def _description(container: Tag, title: str) -> Optional[str]:
@@ -150,12 +162,7 @@ class IdnesTVScraper:
             if not title:
                 continue
 
-            container = self._smallest_schedule_container(anchor)
-            if container is None:
-                continue
-            text = " ".join(container.stripped_strings)
-            time_match = TIME_RANGE_RE.search(text)
-            date_match = DATE_RE.search(text)
+            time_match, date_match = self._schedule_metadata_before(anchor)
             if not time_match or not date_match:
                 continue
 
@@ -182,7 +189,7 @@ class IdnesTVScraper:
                     source_id=source_id,
                     channel_slug=channel_slug,
                     title=title,
-                    description=self._description(container, title),
+                    description=None,
                     start_local=start_local,
                     end_local=end_local,
                     source_url=href,
