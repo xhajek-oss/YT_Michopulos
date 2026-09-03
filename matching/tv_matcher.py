@@ -229,12 +229,31 @@ def score_pair(event: sqlite3.Row, tv: sqlite3.Row) -> MatchCandidate:
 
 
 class TVMatcher:
-    def __init__(self, db_path: str | Path = "data/events.db") -> None:
+    def __init__(self, db_path: str | Path = "data/sports_events.db") -> None:
         self.db_path = Path(db_path)
 
     def _connect(self) -> sqlite3.Connection:
+        if not self.db_path.exists():
+            raise RuntimeError(
+                f"SQLite database does not exist: {self.db_path}. "
+                "Run the sports scraper and TV scraper first."
+            )
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        required = {"sports_events", "tv_programs"}
+        missing = sorted(required - tables)
+        if missing:
+            conn.close()
+            raise RuntimeError(
+                f"SQLite database {self.db_path} is missing required table(s): "
+                + ", ".join(missing)
+            )
         return conn
 
     def find_candidates(self, *, min_score: int = 50, days_before: int = 1, days_after: int = 1) -> list[MatchCandidate]:
