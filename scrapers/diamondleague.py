@@ -56,16 +56,16 @@ CALENDAR_RE = re.compile(
 #   18h42 Women's 100m
 # We intentionally require minutes so text such as "17h: Doors open" is ignored.
 TIME_RE = re.compile(
-    r"(?<!\\d)(?P<hour>[01]?\\d|2[0-3])"
-    r"(?:(?:[:.])(?P<minute_colon>[0-5]\\d)|h(?P<minute_h>[0-5]\\d)?)"
-    r"(?!\\d)",
+    r"(?<!\d)(?P<hour>[01]?\d|2[0-3])"
+    r"(?:(?:[:.])(?P<minute_colon>[0-5]\d)|h(?P<minute_h>[0-5]\d)?)"
+    r"(?!\d)",
     re.IGNORECASE,
 )
 
 MAIN_PROGRAM_RE = re.compile(
-    r"(?<!\\d)(?P<hour>[01]?\\d|2[0-3])"
-    r"(?:(?:[:.])(?P<minute_colon>[0-5]\\d)|h(?P<minute_h>[0-5]\\d)?)"
-    r"\\s*:?\\s*(?:Main program|Main programme|Hoofdprogramma)",
+    r"(?<!\d)(?P<hour>[01]?\d|2[0-3])"
+    r"(?:(?:[:.])(?P<minute_colon>[0-5]\d)|h(?P<minute_h>[0-5]\d)?)"
+    r"\s*:?\s*(?:Main program|Main programme|Hoofdprogramma)",
     re.IGNORECASE,
 )
 
