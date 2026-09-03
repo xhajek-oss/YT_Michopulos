@@ -1,3 +1,4 @@
+```python
 import os
 import json
 import re
@@ -34,6 +35,36 @@ MIN_DURATION_SECONDS = 5 * 60
 
 
 # ============================================================
+# SPOTIFY NASTAVENÍ
+# ============================================================
+
+# Maximální rozdíl mezi datem YouTube a Spotify.
+#
+# Například:
+#
+# YouTube: 3. 9.
+# Spotify: 2. 9.
+#
+# => OK
+#
+# YouTube: 3. 9.
+# Spotify: 20. 8.
+#
+# => nepravděpodobná shoda
+#
+SPOTIFY_MAX_DATE_DIFFERENCE_DAYS = 14
+
+
+# Minimální skóre podobnosti názvu.
+#
+# 0.80 = velmi přísné
+# 0.70 = přísné
+# 0.60 = rozumné
+#
+SPOTIFY_MIN_SCORE = 0.70
+
+
+# ============================================================
 # YOUTUBE SEARCH QUERIES
 # ============================================================
 
@@ -47,6 +78,55 @@ SEARCH_QUERIES = {
 
 
 # ============================================================
+# BĚŽNÁ SLOVA, KTERÁ NECHCEME PŘI POROVNÁNÍ
+# ============================================================
+
+STOP_WORDS = {
+    "a",
+    "ale",
+    "ani",
+    "asi",
+    "co",
+    "jak",
+    "jako",
+    "je",
+    "jsou",
+    "na",
+    "nad",
+    "ne",
+    "nebo",
+    "o",
+    "od",
+    "pod",
+    "po",
+    "pro",
+    "před",
+    "se",
+    "si",
+    "s",
+    "to",
+    "u",
+    "v",
+    "ve",
+    "za",
+    "ze",
+
+    "the",
+    "and",
+    "or",
+    "of",
+    "in",
+    "on",
+    "with",
+    "to",
+    "for",
+    "from",
+    "is",
+    "are",
+}
+
+
+# ============================================================
 # JSON
 # ============================================================
 
@@ -54,7 +134,11 @@ def load_json(filename, default):
     if not os.path.exists(filename):
         return default
 
-    with open(filename, "r", encoding="utf-8") as f:
+    with open(
+        filename,
+        "r",
+        encoding="utf-8",
+    ) as f:
         return json.load(f)
 
 
@@ -62,9 +146,16 @@ def save_json(filename, data):
     directory = os.path.dirname(filename)
 
     if directory:
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(
+            directory,
+            exist_ok=True,
+        )
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(
+        filename,
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(
             data,
             f,
@@ -74,11 +165,84 @@ def save_json(filename, data):
 
 
 # ============================================================
+# TEXT
+# ============================================================
+
+def normalize_text(text):
+    """
+    Normalizace textu:
+
+    - malá písmena
+    - odstranění diakritiky
+    - odstranění interpunkce
+    - odstranění přebytečných mezer
+    """
+
+    if not text:
+        return ""
+
+    text = text.lower()
+
+    text = unicodedata.normalize(
+        "NFKD",
+        text,
+    )
+
+    text = "".join(
+        char
+        for char in text
+        if not unicodedata.combining(char)
+    )
+
+    text = re.sub(
+        r"[^\w\s]",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def get_significant_words(text):
+    """
+    Vrací pouze významná slova.
+
+    Například:
+
+        "David Svoboda: Co se děje na Ukrajině?"
+
+    =>
+
+        {"david", "svoboda", "deje", "ukrajine"}
+    """
+
+    normalized = normalize_text(text)
+
+    words = normalized.split()
+
+    return {
+        word
+        for word in words
+        if len(word) >= 3
+        and word not in STOP_WORDS
+    }
+
+
+# ============================================================
 # YOUTUBE
 # ============================================================
 
 def youtube_search(query):
-    url = "https://www.googleapis.com/youtube/v3/search"
+    url = (
+        "https://www.googleapis.com/"
+        "youtube/v3/search"
+    )
 
     params = {
         "part": "snippet",
@@ -97,35 +261,33 @@ def youtube_search(query):
 
     response.raise_for_status()
 
-    return response.json().get("items", [])
+    return response.json().get(
+        "items",
+        [],
+    )
 
 
 def youtube_get_video_details(video_ids):
-    """
-    Načte délku videí přes YouTube videos.list API.
-
-    Vrací:
-
-        {
-            "video_id": {
-                "duration_seconds": 123,
-                "duration": "PT2M3S"
-            }
-        }
-    """
 
     if not video_ids:
         return {}
 
-    url = "https://www.googleapis.com/youtube/v3/videos"
+    url = (
+        "https://www.googleapis.com/"
+        "youtube/v3/videos"
+    )
 
     details = {}
 
-    # YouTube API umožňuje maximálně 50 ID
-    # v jednom requestu.
-    for i in range(0, len(video_ids), 50):
+    for i in range(
+        0,
+        len(video_ids),
+        50,
+    ):
 
-        batch = video_ids[i:i + 50]
+        batch = video_ids[
+            i:i + 50
+        ]
 
         params = {
             "part": "contentDetails",
@@ -146,41 +308,41 @@ def youtube_get_video_details(video_ids):
             [],
         ):
 
-            video_id = item.get("id")
+            video_id = item.get(
+                "id"
+            )
 
             duration = (
-                item.get(
+                item
+                .get(
                     "contentDetails",
                     {},
-                ).get("duration")
+                )
+                .get(
+                    "duration"
+                )
             )
 
             if not video_id or not duration:
                 continue
 
-            duration_seconds = parse_iso8601_duration(
-                duration
+            duration_seconds = (
+                parse_iso8601_duration(
+                    duration
+                )
             )
 
             details[video_id] = {
-                "duration_seconds": duration_seconds,
-                "duration": duration,
+                "duration_seconds":
+                    duration_seconds,
+                "duration":
+                    duration,
             }
 
     return details
 
 
 def parse_iso8601_duration(duration):
-    """
-    Převod ISO 8601 délky YouTube videa
-    na sekundy.
-
-    Příklady:
-
-        PT30S
-        PT5M
-        PT1H2M3S
-    """
 
     match = re.fullmatch(
         r"PT"
@@ -213,9 +375,6 @@ def parse_iso8601_duration(duration):
 
 
 def format_duration(seconds):
-    """
-    Hezký zápis délky videa.
-    """
 
     hours = seconds // 3600
 
@@ -228,6 +387,7 @@ def format_duration(seconds):
     )
 
     if hours:
+
         return (
             f"{hours}:"
             f"{minutes:02d}:"
@@ -245,13 +405,6 @@ def format_duration(seconds):
 # ============================================================
 
 def spotify_get_access_token():
-    """
-    Získá Spotify access token pomocí
-    Client Credentials Flow.
-
-    Token platí omezenou dobu a Spotify ho
-    používá pro následné API požadavky.
-    """
 
     url = (
         "https://accounts.spotify.com/"
@@ -261,7 +414,8 @@ def spotify_get_access_token():
     response = requests.post(
         url,
         data={
-            "grant_type": "client_credentials",
+            "grant_type":
+                "client_credentials",
         },
         auth=(
             SPOTIFY_CLIENT_ID,
@@ -272,74 +426,15 @@ def spotify_get_access_token():
 
     response.raise_for_status()
 
-    data = response.json()
-
-    return data["access_token"]
-
-
-def normalize_text(text):
-    """
-    Normalizace textu pro porovnávání názvů.
-
-    Odstraní například rozdíl:
-
-        Ukrajina
-        ukrajina
-        UKRAJINA
-
-    a také diakritiku.
-    """
-
-    if not text:
-        return ""
-
-    text = text.lower()
-
-    text = unicodedata.normalize(
-        "NFKD",
-        text,
-    )
-
-    text = "".join(
-        c
-        for c in text
-        if not unicodedata.combining(c)
-    )
-
-    text = re.sub(
-        r"[^\w\s]",
-        " ",
-        text,
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
+    return response.json()[
+        "access_token"
+    ]
 
 
-def spotify_search_episode(
-    title,
-    channel_title,
+def spotify_search(
+    query,
     access_token,
 ):
-    """
-    Hledá odpovídající podcastovou epizodu
-    na Spotify.
-
-    Vrací:
-
-        {
-            "name": "...",
-            "url": "...",
-            "score": 0.85
-        }
-
-    nebo None.
-    """
 
     url = (
         "https://api.spotify.com/"
@@ -347,46 +442,313 @@ def spotify_search_episode(
     )
 
     headers = {
-        "Authorization": (
-            f"Bearer {access_token}"
-        ),
+        "Authorization":
+            f"Bearer {access_token}",
     }
 
+    params = {
+        "q": query,
+        "type": "episode",
+        "limit": 10,
+        "market": "CZ",
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return (
+        response.json()
+        .get("episodes", {})
+        .get("items", [])
+    )
+
+
+def parse_spotify_date(date_string):
+
+    if not date_string:
+        return None
+
+    try:
+
+        # Spotify může vracet:
+        #
+        # 2026
+        # 2026-09
+        # 2026-09-03
+        #
+
+        if len(date_string) == 4:
+
+            return datetime.strptime(
+                date_string,
+                "%Y",
+            ).date()
+
+        if len(date_string) == 7:
+
+            return datetime.strptime(
+                date_string,
+                "%Y-%m",
+            ).date()
+
+        return datetime.strptime(
+            date_string,
+            "%Y-%m-%d",
+        ).date()
+
+    except ValueError:
+
+        return None
+
+
+def calculate_title_score(
+    youtube_title,
+    spotify_title,
+):
+    """
+    Vypočítá podobnost názvů.
+
+    Používáme:
+
+    1. přesnou shodu
+    2. podíl společných slov
+    3. zda je jeden název obsažen
+       v druhém
+    """
+
+    youtube_normalized = normalize_text(
+        youtube_title
+    )
+
+    spotify_normalized = normalize_text(
+        spotify_title
+    )
+
+    if not youtube_normalized:
+        return 0.0
+
+    if not spotify_normalized:
+        return 0.0
+
+    # Přesná shoda.
+    if (
+        youtube_normalized
+        == spotify_normalized
+    ):
+
+        return 1.0
+
+    youtube_words = get_significant_words(
+        youtube_title
+    )
+
+    spotify_words = get_significant_words(
+        spotify_title
+    )
+
+    if not youtube_words:
+        return 0.0
+
+    common_words = (
+        youtube_words
+        & spotify_words
+    )
+
+    word_score = (
+        len(common_words)
+        / len(youtube_words)
+    )
+
+    # Pokud je celý YouTube název
+    # obsažený ve Spotify názvu.
+    if (
+        youtube_normalized
+        in spotify_normalized
+    ):
+
+        word_score = max(
+            word_score,
+            0.90,
+        )
+
+    # Pokud je Spotify název obsažený
+    # v YouTube názvu.
+    if (
+        spotify_normalized
+        in youtube_normalized
+    ):
+
+        word_score = max(
+            word_score,
+            0.90,
+        )
+
+    return word_score
+
+
+def calculate_person_score(
+    person_name,
+    youtube_title,
+    spotify_episode,
+):
+    """
+    Kontrola konkrétní osoby.
+
+    Pro Davida Svobodu chceme vidět
+    jeho jméno v názvu Spotify epizody
+    nebo názvu pořadu.
+    """
+
+    if not person_name:
+        return 1.0
+
+    person_words = get_significant_words(
+        person_name
+    )
+
+    if not person_words:
+        return 1.0
+
+    spotify_title = spotify_episode.get(
+        "name",
+        "",
+    )
+
+    show = spotify_episode.get(
+        "show",
+        {},
+    )
+
+    show_name = show.get(
+        "name",
+        "",
+    )
+
+    combined = (
+        f"{spotify_title} "
+        f"{show_name}"
+    )
+
+    spotify_words = get_significant_words(
+        combined
+    )
+
+    matched = (
+        person_words
+        & spotify_words
+    )
+
+    if not matched:
+        return 0.0
+
+    return (
+        len(matched)
+        / len(person_words)
+    )
+
+
+def calculate_date_score(
+    youtube_date,
+    spotify_date_string,
+):
+    """
+    Kontrola data vydání.
+
+    Čím menší rozdíl mezi YouTube
+    a Spotify, tím lepší skóre.
+    """
+
+    spotify_date = parse_spotify_date(
+        spotify_date_string
+    )
+
+    if not youtube_date:
+        return 0.0
+
+    if not spotify_date:
+        return 0.5
+
+    difference = abs(
+        (
+            youtube_date.date()
+            - spotify_date
+        ).days
+    )
+
+    if difference <= 1:
+        return 1.0
+
+    if difference <= 3:
+        return 0.90
+
+    if difference <= 7:
+        return 0.80
+
+    if difference <= 14:
+        return 0.65
+
+    return 0.0
+
+
+def find_best_spotify_episode(
+    title,
+    channel_title,
+    published,
+    person_name,
+    access_token,
+):
+    """
+    Najde nejlepší Spotify kandidát.
+
+    Kandidát musí splnit:
+
+    - rozumnou podobnost názvu
+    - správné datum
+    - pokud je známá osoba,
+      musí se její jméno objevit
+      v Spotify názvu nebo pořadu
+    """
+
     # --------------------------------------------------------
-    # 1. HLEDÁNÍ PODLE NÁZVU VIDEA
+    # VYHLEDÁVACÍ DOTAZY
     # --------------------------------------------------------
 
-    queries = [
-        title,
-        f"{title} {channel_title}",
-    ]
+    queries = []
 
-    all_episodes = {}
+    # Nejdůležitější je samotný název.
+    queries.append(title)
+
+    # Potom název + osoba.
+    if person_name:
+
+        queries.append(
+            f"{title} {person_name}"
+        )
+
+    # Nakonec název + YouTube kanál.
+    if channel_title:
+
+        queries.append(
+            f"{title} {channel_title}"
+        )
+
+    all_candidates = {}
 
     for query in queries:
 
-        params = {
-            "q": query,
-            "type": "episode",
-            "limit": 10,
-            "market": "CZ",
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=30,
+        print(
+            f"Spotify search: {query}"
         )
 
-        response.raise_for_status()
-
-        data = response.json()
-
-        episodes = (
-            data
-            .get("episodes", {})
-            .get("items", [])
+        episodes = spotify_search(
+            query=query,
+            access_token=access_token,
         )
 
         for episode in episodes:
@@ -396,196 +758,244 @@ def spotify_search_episode(
             )
 
             if episode_id:
-                all_episodes[
+
+                all_candidates[
                     episode_id
                 ] = episode
 
-    episodes = list(
-        all_episodes.values()
+    candidates = list(
+        all_candidates.values()
     )
 
-    if not episodes:
+    if not candidates:
 
         print(
-            "Spotify: žádná epizoda"
+            "Spotify: žádní kandidáti"
         )
 
         return None
 
-    normalized_title = normalize_text(
-        title
-    )
+    # --------------------------------------------------------
+    # VYHODNOCENÍ
+    # --------------------------------------------------------
 
-    title_words = set(
-        normalized_title.split()
-    )
-
-    # Odstraníme velmi krátká slova.
-    title_words = {
-        word
-        for word in title_words
-        if len(word) >= 4
-    }
-
-    best_episode = None
+    best = None
     best_score = 0.0
 
-    # --------------------------------------------------------
-    # 2. POROVNÁNÍ NÁZVŮ
-    # --------------------------------------------------------
+    for episode in candidates:
 
-    for episode in episodes:
-
-        spotify_name = episode.get(
+        spotify_title = episode.get(
             "name",
             "",
         )
 
-        normalized_spotify_name = (
-            normalize_text(
-                spotify_name
+        spotify_release_date = (
+            episode.get(
+                "release_date",
+                "",
             )
         )
-
-        if not normalized_spotify_name:
-            continue
-
-        spotify_words = set(
-            normalized_spotify_name.split()
-        )
-
-        # ----------------------------------------------------
-        # PŘESNÁ SHODA
-        # ----------------------------------------------------
-
-        if (
-            normalized_spotify_name
-            == normalized_title
-        ):
-
-            return {
-                "name": spotify_name,
-                "url": episode.get(
-                    "external_urls",
-                    {},
-                ).get("spotify"),
-                "score": 1.0,
-            }
-
-        # ----------------------------------------------------
-        # SHODA SLOV
-        # ----------------------------------------------------
-
-        if not title_words:
-            continue
-
-        common_words = (
-            title_words
-            & spotify_words
-        )
-
-        score = (
-            len(common_words)
-            / len(title_words)
-        )
-
-        # ----------------------------------------------------
-        # BONUS ZA ČÁST NÁZVU
-        # ----------------------------------------------------
-
-        if (
-            normalized_title
-            in normalized_spotify_name
-        ):
-            score = max(
-                score,
-                0.85,
-            )
-
-        if score > best_score:
-
-            best_score = score
-            best_episode = episode
-
-    # --------------------------------------------------------
-    # 3. MINIMÁLNÍ POŽADOVANÁ SHODA
-    # --------------------------------------------------------
-
-    # Čím vyšší číslo, tím menší riziko
-    # špatného přiřazení Spotify epizody.
-
-    MIN_SPOTIFY_MATCH_SCORE = 0.60
-
-    if (
-        best_episode
-        and best_score
-        >= MIN_SPOTIFY_MATCH_SCORE
-    ):
 
         spotify_url = (
-            best_episode
-            .get("external_urls", {})
-            .get("spotify")
+            episode
+            .get(
+                "external_urls",
+                {},
+            )
+            .get(
+                "spotify"
+            )
         )
 
-        if spotify_url:
+        if not spotify_url:
+            continue
+
+        # -----------------------------------------------
+        # TITLE SCORE
+        # -----------------------------------------------
+
+        title_score = calculate_title_score(
+            title,
+            spotify_title,
+        )
+
+        # -----------------------------------------------
+        # PERSON SCORE
+        # -----------------------------------------------
+
+        person_score = calculate_person_score(
+            person_name,
+            title,
+            episode,
+        )
+
+        # Pokud osoba existuje a není
+        # nalezena, kandidáta rovnou vyřadíme.
+        if (
+            person_name
+            and person_score < 1.0
+        ):
 
             print(
-                "Spotify: nalezeno"
+                f"Spotify kandidát vyřazen "
+                f"(osoba): {spotify_title}"
             )
+
+            continue
+
+        # -----------------------------------------------
+        # DATE SCORE
+        # -----------------------------------------------
+
+        date_score = calculate_date_score(
+            published,
+            spotify_release_date,
+        )
+
+        # Pokud je Spotify epizoda
+        # příliš daleko od YouTube data,
+        # nepovažujeme ji za stejnou epizodu.
+        if date_score == 0.0:
 
             print(
-                f"  Název: "
-                f"{best_episode.get('name')}"
+                f"Spotify kandidát vyřazen "
+                f"(datum): {spotify_title}"
             )
 
-            print(
-                f"  Shoda: "
-                f"{best_score:.2f}"
-            )
+            continue
 
-            print(
-                f"  URL: "
-                f"{spotify_url}"
-            )
+        # -----------------------------------------------
+        # CELKOVÉ SKÓRE
+        # -----------------------------------------------
 
-            return {
-                "name": best_episode.get(
-                    "name",
-                    "",
-                ),
-                "url": spotify_url,
-                "score": best_score,
-            }
-
-    print(
-        "Spotify: vhodná shoda nenalezena"
-    )
-
-    if best_episode:
-
-        print(
-            f"  Nejlepší kandidát: "
-            f"{best_episode.get('name')}"
+        # Název má největší váhu.
+        #
+        # Datum je druhý důležitý signál.
+        #
+        total_score = (
+            title_score * 0.75
+            + date_score * 0.25
         )
 
         print(
-            f"  Shoda: "
+            "Spotify kandidát:"
+        )
+
+        print(
+            f"  {spotify_title}"
+        )
+
+        print(
+            f"  title score: "
+            f"{title_score:.2f}"
+        )
+
+        print(
+            f"  date score: "
+            f"{date_score:.2f}"
+        )
+
+        print(
+            f"  total score: "
+            f"{total_score:.2f}"
+        )
+
+        if total_score > best_score:
+
+            best_score = total_score
+            best = episode
+
+    # --------------------------------------------------------
+    # VÝSLEDEK
+    # --------------------------------------------------------
+
+    if not best:
+
+        print(
+            "Spotify: žádná dostatečně "
+            "dobrá shoda"
+        )
+
+        return None
+
+    if best_score < SPOTIFY_MIN_SCORE:
+
+        print(
+            "Spotify: nejlepší kandidát "
+            "nesplnil minimální skóre"
+        )
+
+        print(
+            f"  Skóre: "
             f"{best_score:.2f}"
         )
 
-    return None
+        return None
+
+    spotify_url = (
+        best
+        .get(
+            "external_urls",
+            {},
+        )
+        .get(
+            "spotify"
+        )
+    )
+
+    if not spotify_url:
+        return None
+
+    print()
+    print(
+        "★★★★★ SPOTIFY SHODA ★★★★★"
+    )
+
+    print(
+        f"Název: "
+        f"{best.get('name')}"
+    )
+
+    print(
+        f"Datum: "
+        f"{best.get('release_date')}"
+    )
+
+    print(
+        f"Skóre: "
+        f"{best_score:.2f}"
+    )
+
+    print(
+        f"URL: "
+        f"{spotify_url}"
+    )
+
+    return {
+        "name": best.get(
+            "name",
+            "",
+        ),
+        "url": spotify_url,
+        "release_date": best.get(
+            "release_date",
+            "",
+        ),
+        "score": best_score,
+    }
 
 
 def find_spotify_link(
     title,
     channel_title,
+    published,
+    person_name,
 ):
     """
-    Bezpečné vyhledání Spotify.
+    Bezpečné hledání Spotify.
 
-    Pokud Spotify nefunguje, vrací None,
-    aby se monitoring YouTube nezastavil.
+    Pokud se Spotify nepodaří ověřit,
+    vrací None.
     """
 
     try:
@@ -598,16 +1008,17 @@ def find_spotify_link(
             spotify_get_access_token()
         )
 
-        result = spotify_search_episode(
-            title=title,
-            channel_title=channel_title,
-            access_token=access_token,
+        result = (
+            find_best_spotify_episode(
+                title=title,
+                channel_title=channel_title,
+                published=published,
+                person_name=person_name,
+                access_token=access_token,
+            )
         )
 
-        if result:
-            return result
-
-        return None
+        return result
 
     except Exception as e:
 
@@ -616,7 +1027,8 @@ def find_spotify_link(
         )
 
         print(
-            "→ Pokračuji přes YouTube."
+            "→ Spotify nedostupné, "
+            "použiji YouTube."
         )
 
         return None
@@ -627,6 +1039,7 @@ def find_spotify_link(
 # ============================================================
 
 def send_telegram(message):
+
     url = (
         "https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -705,8 +1118,13 @@ def main():
     )
 
     print(
-        f"Minimální délka videa: "
+        "Minimální délka videa: "
         f"{format_duration(MIN_DURATION_SECONDS)}"
+    )
+
+    print(
+        "Spotify minimální skóre: "
+        f"{SPOTIFY_MIN_SCORE}"
     )
 
     # ========================================================
@@ -719,10 +1137,12 @@ def main():
     ):
 
         exclude_channels = set(
-            config.get(
+            config
+            .get(
                 "exclude_channels",
                 {},
-            ).get(
+            )
+            .get(
                 keyword,
                 [],
             )
@@ -734,7 +1154,7 @@ def main():
         )
 
         # ====================================================
-        # VYHLEDÁNÍ VIDEÍ
+        # YOUTUBE SEARCH
         # ====================================================
 
         if keyword in SEARCH_QUERIES:
@@ -771,8 +1191,13 @@ def main():
 
                     video_id = (
                         item
-                        .get("id", {})
-                        .get("videoId")
+                        .get(
+                            "id",
+                            {},
+                        )
+                        .get(
+                            "videoId"
+                        )
                     )
 
                     if video_id:
@@ -802,7 +1227,7 @@ def main():
             )
 
         # ====================================================
-        # NAČTENÍ DÉLEK
+        # YOUTUBE DETAILS
         # ====================================================
 
         video_ids = []
@@ -811,8 +1236,13 @@ def main():
 
             video_id = (
                 item
-                .get("id", {})
-                .get("videoId")
+                .get(
+                    "id",
+                    {},
+                )
+                .get(
+                    "videoId"
+                )
             )
 
             if video_id:
@@ -833,7 +1263,7 @@ def main():
         )
 
         # ====================================================
-        # ZPRACOVÁNÍ
+        # PROCESS VIDEOS
         # ====================================================
 
         keyword_initialized = (
@@ -845,8 +1275,13 @@ def main():
 
             video_id = (
                 item
-                .get("id", {})
-                .get("videoId")
+                .get(
+                    "id",
+                    {},
+                )
+                .get(
+                    "videoId"
+                )
             )
 
             snippet = item.get(
@@ -862,11 +1297,9 @@ def main():
                 "Bez názvu",
             )
 
-            channel_title = (
-                snippet.get(
-                    "channelTitle",
-                    "Neznámý kanál",
-                )
+            channel_title = snippet.get(
+                "channelTitle",
+                "Neznámý kanál",
             )
 
             channel_id = snippet.get(
@@ -905,10 +1338,13 @@ def main():
             )
 
             # =================================================
-            # VYLOUČENÝ KANÁL
+            # EXCLUDED CHANNEL
             # =================================================
 
-            if channel_id in exclude_channels:
+            if (
+                channel_id
+                in exclude_channels
+            ):
 
                 print(
                     "→ VYŘAZENO: "
@@ -918,7 +1354,7 @@ def main():
                 continue
 
             # =================================================
-            # STÁŘÍ
+            # AGE
             # =================================================
 
             if age > max_age:
@@ -932,7 +1368,7 @@ def main():
                 continue
 
             # =================================================
-            # DÉLKA
+            # DURATION
             # =================================================
 
             details = video_details.get(
@@ -973,10 +1409,6 @@ def main():
                     "nebo méně"
                 )
 
-                # Uložíme jako známé,
-                # aby se příště znovu
-                # nezpracovávalo.
-
                 seen_video_ids.add(
                     video_id
                 )
@@ -984,7 +1416,7 @@ def main():
                 continue
 
             # =================================================
-            # PRVNÍ KONTROLA
+            # FIRST CHECK
             # =================================================
 
             if not keyword_initialized:
@@ -1002,7 +1434,7 @@ def main():
                 continue
 
             # =================================================
-            # DUPLICITA
+            # DUPLICATE
             # =================================================
 
             if video_id in seen_video_ids:
@@ -1016,7 +1448,7 @@ def main():
                 continue
 
             # =================================================
-            # NOVÉ VIDEO
+            # NEW VIDEO
             # =================================================
 
             video_url = (
@@ -1032,15 +1464,22 @@ def main():
                 find_spotify_link(
                     title=title,
                     channel_title=channel_title,
+                    published=published,
+                    person_name=keyword,
                 )
             )
 
             spotify_url = None
+            spotify_name = None
 
             if spotify_result:
 
                 spotify_url = (
                     spotify_result["url"]
+                )
+
+                spotify_name = (
+                    spotify_result["name"]
                 )
 
                 final_url = spotify_url
@@ -1058,7 +1497,7 @@ def main():
                 )
 
             # =================================================
-            # ULOŽENÍ NOVÉHO VIDEA
+            # STORE
             # =================================================
 
             all_new_videos.append(
@@ -1072,6 +1511,7 @@ def main():
                     "url": final_url,
                     "youtube_url": video_url,
                     "spotify_url": spotify_url,
+                    "spotify_name": spotify_name,
                     "video_id": video_id,
                 }
             )
@@ -1100,10 +1540,6 @@ def main():
 
     for video in all_new_videos:
 
-        # ----------------------------------------------------
-        # SPOTIFY
-        # ----------------------------------------------------
-
         if video.get(
             "spotify_url"
         ):
@@ -1113,9 +1549,13 @@ def main():
                 f"{video['spotify_url']}"
             )
 
-        # ----------------------------------------------------
-        # YOUTUBE
-        # ----------------------------------------------------
+            if video.get(
+                "spotify_name"
+            ):
+
+                source_text = (
+                    "Zdroj: Spotify"
+                )
 
         else:
 
@@ -1124,9 +1564,9 @@ def main():
                 f"{video['youtube_url']}"
             )
 
-        # ----------------------------------------------------
-        # TELEGRAM MESSAGE
-        # ----------------------------------------------------
+            source_text = (
+                "Zdroj: YouTube"
+            )
 
         message = (
             "🎬 Nové video\n\n"
@@ -1140,7 +1580,9 @@ def main():
             f"{video['duration']}\n"
 
             "Publikováno: "
-            f"{video['published_at']}\n\n"
+            f"{video['published_at']}\n"
+
+            f"{source_text}\n\n"
 
             f"{link_text}"
         )
@@ -1164,7 +1606,7 @@ def main():
             )
 
     # ========================================================
-    # ULOŽENÍ STAVU
+    # SAVE STATE
     # ========================================================
 
     state["seen_video_ids"] = list(
@@ -1195,3 +1637,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
