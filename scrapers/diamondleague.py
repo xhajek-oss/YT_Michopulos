@@ -303,8 +303,17 @@ class DiamondLeagueScraper(BaseScraper):
                     payloads = []
                     response_urls = []
 
+                    def _is_dl_data_url(url):
+                        lowered = url.lower()
+                        return (
+                            "swisstiming.com" in lowered
+                            or "sportresult.com" in lowered
+                            or "engine.io" in lowered
+                            or "socket.io" in lowered
+                        )
+
                     def on_request(request):
-                        if not _is_swiss_timing_url(request.url):
+                        if not _is_dl_data_url(request.url):
                             return
                         print(
                             f"[DL-NET] REQUEST | {request.resource_type} | "
@@ -312,16 +321,44 @@ class DiamondLeagueScraper(BaseScraper):
                         )
 
                     def on_websocket(ws):
-                        if not _is_swiss_timing_url(ws.url):
+                        if not _is_dl_data_url(ws.url):
                             return
                         print(f"[DL-NET] WEBSOCKET | {ws.url}")
 
+                        def _print_ws(direction, payload):
+                            try:
+                                value = payload
+                                if isinstance(payload, bytes):
+                                    value = payload[:1200]
+                                else:
+                                    value = str(payload)[:1200]
+                                print(f"[DL-WS] {direction} | {value}")
+                            except Exception as exc:
+                                print(f"[DL-WS] {direction} | <unprintable: {exc}>")
+
+                        ws.on(
+                            "framesent",
+                            lambda payload: _print_ws("SENT", payload),
+                        )
+                        ws.on(
+                            "framereceived",
+                            lambda payload: _print_ws("RECV", payload),
+                        )
+
                     def on_response(response):
                         url = response.url
-                        if not _is_swiss_timing_url(url):
+                        if not _is_dl_data_url(url):
                             return
 
                         ctype = (response.headers.get("content-type") or "").lower()
+                        try:
+                            resource_type = response.request.resource_type
+                        except Exception:
+                            resource_type = "unknown"
+                        print(
+                            f"[DL-NET] RESPONSE | {response.status} | "
+                            f"{resource_type} | {ctype} | {url}"
+                        )
 
                         # Diagnostic: inspect the Swiss Timing JS bundle that decides
                         # where schedule/results data are loaded from.
@@ -384,7 +421,7 @@ class DiamondLeagueScraper(BaseScraper):
                     page.on("websocket", on_websocket)
                     try:
                         page.goto(programme_url, wait_until="domcontentloaded", timeout=45000)
-                        page.wait_for_timeout(6000)
+                        page.wait_for_timeout(10000)
 
                         # If the embedded app has not requested its data yet,
                         # navigate directly to the Swiss Timing iframe once.
@@ -394,7 +431,7 @@ class DiamondLeagueScraper(BaseScraper):
                         swiss_urls = [u for u in iframe_urls if _is_swiss_timing_url(u)]
                         if swiss_urls and not payloads:
                             page.goto(swiss_urls[0], wait_until="domcontentloaded", timeout=45000)
-                            page.wait_for_timeout(6000)
+                            page.wait_for_timeout(10000)
                     except Exception as exc:
                         print(f"diamondleague {meeting['city']}: load error: {exc}")
                     finally:
