@@ -149,8 +149,7 @@ class HCDynamoScraper(BaseScraper):
             seen.add(key)
             events.append(event)
 
-        if not events:
-            raise RuntimeError("HC Dynamo scraper returned 0 events.")
-
+        # An empty published schedule is a valid state.
+        # Network/HTTP/parser failures still propagate as real errors.
         events.sort(key=lambda event: event.start_datetime)
         return events

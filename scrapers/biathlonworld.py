@@ -212,8 +212,7 @@ class BiathlonWorldScraper(BaseScraper):
                 context.close()
                 browser.close()
 
-        if not all_events:
-            raise RuntimeError("Biathlon World scraper returned 0 events.")
-
+        # A season/event page may legitimately contain no published races yet.
+        # Actual browser/network/parser errors still propagate as real errors.
         all_events.sort(key=lambda event: event.start_datetime)
         return all_events
