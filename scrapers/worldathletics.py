@@ -1,80 +1,274 @@
 import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from playwright.sync_api import sync_playwright
+
+from models.sports_event import SportsEvent
 from .base import BaseScraper
+
+
+TIME_RE = re.compile(r"^(?P<time>\d{1,2}:\d{2})\s+(?P<name>.+)$")
+ROW_RE = re.compile(
+    r"^(?P<local>\d{1,2}:\d{2})\s+"
+    r"(?P<my>\d{1,2}:\d{2})\s+"
+    r"(?P<sex>[MWX])\s+"
+    r"(?P<event>.+?)\s+"
+    r"(?P<round>Final|Semi(?:-final)?|Heat.*|Qualification.*|Round.*)$",
+    re.I,
+)
 
 
 class WorldAthleticsScraper(BaseScraper):
     source = "worldathletics"
 
     TARGETS = [
-        ("Budapest 2026",
-         "https://worldathletics.org/competitions/world-athletics-ultimate-championship/2026/schedule"),
-        ("Copenhagen 2026",
-         "https://worldathletics.org/competitions/world-athletics-road-running-championships/copenhagen26/timetable"),
+        {
+            "kind": "budapest",
+            "competition": "World Athletics Ultimate Championship",
+            "location": "Budapest",
+            "country": "HUN",
+            "timezone": "Europe/Budapest",
+            "dates": ["2026-09-11", "2026-09-12", "2026-09-13"],
+            "url": (
+                "https://worldathletics.org/competitions/"
+                "world-athletics-ultimate-championship/2026/schedule"
+            ),
+        },
+        {
+            "kind": "copenhagen",
+            "competition": "World Athletics Road Running Championships",
+            "location": "Copenhagen",
+            "country": "DEN",
+            "timezone": "Europe/Copenhagen",
+            "dates": ["2026-09-19", "2026-09-20"],
+            "url": (
+                "https://worldathletics.org/competitions/"
+                "world-athletics-road-running-championships/copenhagen26/timetable"
+            ),
+        },
     ]
 
+    @staticmethod
+    def _event(target, name, local_dt, source_id):
+        return SportsEvent(
+            source="worldathletics",
+            source_id=source_id,
+            sport="athletics",
+            competition=target["competition"],
+            name=name,
+            start_datetime=local_dt.astimezone(timezone.utc),
+            end_datetime=None,
+            location=target["location"],
+            country=target["country"],
+            source_url=target["url"],
+            discovered_at=datetime.now(timezone.utc),
+            timezone=target["timezone"],
+        )
+
+    @staticmethod
+    def _local_dt(date_text, time_text, tz_name):
+        naive = datetime.strptime(
+            f"{date_text} {time_text}", "%Y-%m-%d %H:%M"
+        )
+        return naive.replace(tzinfo=ZoneInfo(tz_name))
+
+    def _parse_copenhagen(self, page, target):
+        events = []
+
+        day_buttons = page.locator("button").filter(has_text=re.compile(r"DAY\s+[12]", re.I))
+        if day_buttons.count() < 2:
+            raise RuntimeError("World Athletics Copenhagen day tabs not found")
+
+        for day_index, date_text in enumerate(target["dates"]):
+            button = day_buttons.nth(day_index)
+            button.click()
+            page.wait_for_timeout(700)
+
+            rows = page.locator("tbody tr")
+            found_this_day = 0
+
+            for i in range(rows.count()):
+                text = re.sub(r"\s+", " ", rows.nth(i).inner_text()).strip()
+                match = ROW_RE.match(text)
+                if not match:
+                    continue
+
+                sex = match.group("sex").upper()
+                event_name = match.group("event").strip()
+                round_name = match.group("round").strip()
+                local_time = match.group("local")
+
+                gender = {"W": "Women", "M": "Men", "X": "Mixed"}.get(sex, sex)
+                name = f"{event_name} {round_name} {gender}"
+
+                local_dt = self._local_dt(
+                    date_text, local_time, target["timezone"]
+                )
+                source_id = (
+                    f"copenhagen26:{date_text}:{local_time}:"
+                    f"{sex}:{event_name}:{round_name}"
+                )
+                events.append(self._event(target, name, local_dt, source_id))
+                found_this_day += 1
+
+            if found_this_day == 0:
+                raise RuntimeError(
+                    f"World Athletics Copenhagen: no timetable rows for {date_text}"
+                )
+
+        return events
+
+    def _parse_budapest(self, page, target):
+        # The Budapest schedule is rendered as three visual columns. DOM text
+        # order interleaves the columns, so we use browser layout (x position)
+        # to assign each event card to Friday/Saturday/Sunday.
+        cards = page.evaluate(
+            """() => {
+                const timeRe = /^\\s*\\d{1,2}:\\d{2}\\s+/;
+                const out = [];
+
+                for (const el of document.querySelectorAll('body *')) {
+                    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (!timeRe.test(text) || text.length > 140) continue;
+
+                    // Keep the smallest useful element: if a child already
+                    // contains the same complete event text, the parent is noise.
+                    let childHasSame = false;
+                    for (const child of el.children) {
+                        const childText = (child.innerText || '')
+                            .replace(/\\s+/g, ' ').trim();
+                        if (childText === text) {
+                            childHasSame = true;
+                            break;
+                        }
+                    }
+                    if (childHasSame) continue;
+
+                    const r = el.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) continue;
+
+                    out.push({
+                        text,
+                        x: Math.round(r.x),
+                        y: Math.round(r.y),
+                        width: Math.round(r.width),
+                        height: Math.round(r.height)
+                    });
+                }
+                return out;
+            }"""
+        )
+
+        parsed = []
+        seen_text_pos = set()
+
+        for card in cards:
+            text = card["text"]
+            match = TIME_RE.match(text)
+            if not match:
+                continue
+
+            name = match.group("name").strip()
+            # Reject session headers such as "19:00 - 22:00 Local time".
+            if "local time" in name.lower() or re.match(r"^-\s*\d", name):
+                continue
+
+            key = (text, card["x"], card["y"])
+            if key in seen_text_pos:
+                continue
+            seen_text_pos.add(key)
+
+            parsed.append(card)
+
+        if not parsed:
+            raise RuntimeError("World Athletics Budapest: no event cards found")
+
+        # Cluster event cards into three visual columns by their x centres.
+        centres = sorted(card["x"] + card["width"] / 2 for card in parsed)
+        min_x, max_x = centres[0], centres[-1]
+        if max_x - min_x < 100:
+            raise RuntimeError(
+                "World Athletics Budapest: schedule columns could not be separated"
+            )
+
+        step = (max_x - min_x) / 2
+        anchors = [min_x, min_x + step, max_x]
+
+        buckets = [[], [], []]
+        for card in parsed:
+            centre = card["x"] + card["width"] / 2
+            idx = min(range(3), key=lambda i: abs(centre - anchors[i]))
+            buckets[idx].append(card)
+
+        events = []
+        for day_index, bucket in enumerate(buckets):
+            bucket.sort(key=lambda item: item["y"])
+            date_text = target["dates"][day_index]
+
+            for card in bucket:
+                match = TIME_RE.match(card["text"])
+                if not match:
+                    continue
+                time_text = match.group("time")
+                name = match.group("name").strip()
+
+                local_dt = self._local_dt(
+                    date_text, time_text, target["timezone"]
+                )
+                source_id = (
+                    f"budapest2026:{date_text}:{time_text}:"
+                    f"{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')}"
+                )
+                events.append(self._event(target, name, local_dt, source_id))
+
+        # Official programme has many events across all three days; this catches
+        # structural breakage without hard-coding an exact count.
+        if len(events) < 20 or any(not bucket for bucket in buckets):
+            raise RuntimeError(
+                f"World Athletics Budapest: suspicious timetable parse "
+                f"({len(events)} events, columns={[len(b) for b in buckets]})"
+            )
+
+        return events
+
     def scrape(self):
+        all_events = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(locale="en-GB")
+
             try:
-                for label, url in self.TARGETS:
+                for target in self.TARGETS:
                     page = context.new_page()
-                    print(f"[WA-DOM] TARGET | {label}")
                     try:
-                        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                        page.wait_for_timeout(5000)
-
-                        # Find leaf-ish elements whose own text is exactly HH:MM.
-                        time_nodes = page.locator(
-                            "text=/^([01]?\\d|2[0-3]):[0-5]\\d$/"
+                        response = page.goto(
+                            target["url"],
+                            wait_until="domcontentloaded",
+                            timeout=60_000,
                         )
-                        count = min(time_nodes.count(), 12)
-                        print(f"[WA-DOM] TIME_NODES | {label} | {time_nodes.count()}")
+                        if response and response.status >= 400:
+                            raise RuntimeError(
+                                f"World Athletics returned HTTP {response.status}"
+                            )
 
-                        for i in range(count):
-                            node = time_nodes.nth(i)
-                            info = node.evaluate("""el => {
-                                const clean = s => (s || '').replace(/\\s+/g, ' ').trim();
-                                const pack = x => x ? {
-                                    tag: x.tagName,
-                                    cls: x.className || '',
-                                    text: clean(x.innerText).slice(0, 700)
-                                } : null;
-                                return {
-                                    self: pack(el),
-                                    p1: pack(el.parentElement),
-                                    p2: pack(el.parentElement && el.parentElement.parentElement),
-                                    p3: pack(el.parentElement && el.parentElement.parentElement &&
-                                             el.parentElement.parentElement.parentElement)
-                                };
-                            }""")
-                            print(f"[WA-DOM-TIME] {label} | {i} | {info}")
+                        page.wait_for_timeout(3500)
 
-                        # Inspect likely day/tab controls and their accessibility role.
-                        controls = page.locator("button, [role=tab], [role=button]")
-                        useful = []
-                        for i in range(min(controls.count(), 200)):
-                            el = controls.nth(i)
-                            txt = re.sub(r"\s+", " ", el.inner_text()).strip()
-                            if re.search(
-                                r"\b(FRIDAY|SATURDAY|SUNDAY|DAY\s*[12]|19\s+SEP|20\s+SEP)\b",
-                                txt, re.I
-                            ):
-                                useful.append(el.evaluate("""el => ({
-                                    tag: el.tagName,
-                                    cls: el.className || '',
-                                    role: el.getAttribute('role'),
-                                    ariaSelected: el.getAttribute('aria-selected'),
-                                    text: (el.innerText || '').replace(/\\s+/g,' ').trim()
-                                })"""))
-                        print(f"[WA-DOM] CONTROLS | {label} | {useful[:20]}")
+                        if target["kind"] == "budapest":
+                            events = self._parse_budapest(page, target)
+                        else:
+                            events = self._parse_copenhagen(page, target)
 
-                    except Exception as exc:
-                        print(f"[WA-DOM] ERROR | {label} | {type(exc).__name__}: {exc}")
+                        all_events.extend(events)
+                        print(
+                            f"worldathletics {target['location']}: "
+                            f"found {len(events)} events"
+                        )
                     finally:
                         page.close()
             finally:
                 context.close()
                 browser.close()
-        return []
+
+        return all_events
