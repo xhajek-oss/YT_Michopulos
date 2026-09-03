@@ -221,11 +221,9 @@ class IIHFScraper(BaseScraper):
             finally:
                 browser.close()
 
-        if not all_events:
-            raise RuntimeError(
-                "IIHF scraper returned 0 games. "
-                "No published schedule with a known timezone was found."
-            )
-
+        # A future IIHF tournament can already be listed while the individual
+        # game schedule is not published yet. That is a valid state, not an error.
+        # The scraper will start returning games automatically once IIHF exposes
+        # concrete schedule rows.
         all_events.sort(key=lambda event: event.start_datetime)
         return all_events
