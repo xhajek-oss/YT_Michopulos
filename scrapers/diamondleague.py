@@ -1,5 +1,6 @@
+import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Iterable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -18,9 +19,6 @@ MONTHS = {
     "September": 9, "October": 10, "November": 11, "December": 12,
 }
 
-# Venue timezone is deliberately explicit. If Diamond League adds a new
-# venue, we prefer to skip it until its timezone is known rather than
-# silently store a wrong time.
 VENUES = {
     "shanghai/keqiao": ("CHN", "Asia/Shanghai"),
     "shanghai": ("CHN", "Asia/Shanghai"),
@@ -41,7 +39,7 @@ VENUES = {
 }
 
 CALENDAR_RE = re.compile(
-    r"(?P<day>\d{1,2})(?:-\d{1,2})?\s+"
+    r"(?P<day>\d{1,2})(?:-(?P<end_day>\d{1,2}))?\s+"
     r"(?P<month>January|February|March|April|May|June|July|August|"
     r"September|October|November|December)\s+"
     r"(?P<city>Shanghai/Keqiao|Shanghai|Xiamen|Rabat|Rome|Stockholm|Oslo|"
@@ -50,36 +48,27 @@ CALENDAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Common timetable forms from meeting pages / Swiss Timing:
-#   18:42 Women's 100m
-#   18.42 Women's 100m
-#   18h42 Women's 100m
-# We intentionally require minutes so text such as "17h: Doors open" is ignored.
-TIME_RE = re.compile(
-    r"(?<!\d)(?P<hour>[01]?\d|2[0-3])"
-    r"(?:(?:[:.])(?P<minute_colon>[0-5]\d)|h(?P<minute_h>[0-5]\d)?)"
-    r"(?!\d)",
-    re.IGNORECASE,
-)
+TIME_ONLY_RE = re.compile(r"^(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$")
+ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-MAIN_PROGRAM_RE = re.compile(
-    r"(?<!\d)(?P<hour>[01]?\d|2[0-3])"
-    r"(?:(?:[:.])(?P<minute_colon>[0-5]\d)|h(?P<minute_h>[0-5]\d)?)"
-    r"\s*:?\s*(?:Main program|Main programme|Hoofdprogramma)",
-    re.IGNORECASE,
-)
-
-# Words that strongly suggest an actual athletics programme rather than
-# generic website/navigation content.
-ATHLETICS_MARKERS = (
-    "100m", "200m", "400m", "800m", "1500m", "3000m", "5000m",
-    "hurdles", "steeplechase", "pole vault", "high jump", "long jump",
-    "triple jump", "shot put", "discus", "javelin", "relay",
-)
+TIME_KEYS = {
+    "start", "starttime", "startdatetime", "scheduled", "scheduledtime",
+    "scheduledstart", "eventstart", "eventstarttime", "time", "datetime",
+}
+DATE_KEYS = {"date", "eventdate", "scheduleddate", "startdate"}
+NAME_KEYS = {
+    "discipline", "disciplinename", "event", "eventname", "name", "title",
+    "description", "displayname", "longname", "shortname",
+}
 
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
+
+
+def _key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def _meeting_key(city: str) -> str:
@@ -99,15 +88,18 @@ def _extract_calendar(text: str, year: int) -> list[dict]:
             continue
 
         country, tz_name = venue
+        start_day = int(m.group("day"))
+        end_day = int(m.group("end_day") or start_day)
         item = {
             "year": year,
             "month": MONTHS[m.group("month").title()],
-            "day": int(m.group("day")),
+            "day": start_day,
+            "end_day": end_day,
             "city": city,
             "country": country,
             "timezone": tz_name,
         }
-        dedupe = (item["year"], item["month"], item["day"], key)
+        dedupe = (year, item["month"], start_day, end_day, key)
         if dedupe not in seen:
             seen.add(dedupe)
             result.append(item)
@@ -115,70 +107,132 @@ def _extract_calendar(text: str, year: int) -> list[dict]:
     return result
 
 
-def _match_time(match) -> tuple[int, int]:
-    minute = match.groupdict().get("minute_colon") or match.groupdict().get("minute_h") or "00"
-    return int(match.group("hour")), int(minute)
+def _is_swiss_timing_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host.endswith("liveresults.swisstiming.com")
 
 
-def _extract_program_start(texts: list[str]) -> tuple[int, int] | None:
-    """
-    Prefer an explicitly published Main program time. If unavailable, use the
-    earliest concrete athletics-event time from the rendered page/frame.
-    """
-    event_candidates = []
-
-    for raw in texts:
-        text = _norm(raw)
-        lower = text.lower()
-
-        main = MAIN_PROGRAM_RE.search(text)
-        if main:
-            return _match_time(main)
-
-        for match in TIME_RE.finditer(text):
-            start = max(0, match.start() - 100)
-            end = min(len(text), match.end() + 160)
-            window = lower[start:end]
-
-            if not any(marker in window for marker in ATHLETICS_MARKERS):
-                continue
-
-            hour, minute = _match_time(match)
-
-            if hour < 9:
-                continue
-
-            event_candidates.append((hour, minute))
-
-    return min(event_candidates) if event_candidates else None
+def _candidate_name(node: dict) -> str | None:
+    preferred = []
+    fallback = []
+    for raw_key, value in node.items():
+        if not isinstance(value, str):
+            continue
+        value = _norm(value)
+        if not (2 <= len(value) <= 120):
+            continue
+        k = _key(str(raw_key))
+        if k not in NAME_KEYS:
+            continue
+        if re.fullmatch(r"[\d:./ -]+", value):
+            continue
+        if any(token in value.lower() for token in ("cookie", "privacy", "select meeting")):
+            continue
+        if "discipline" in k or "event" in k:
+            preferred.append(value)
+        else:
+            fallback.append(value)
+    return (preferred or fallback or [None])[0]
 
 
-def _make_event(meeting: dict, hour: int, minute: int, source_url: str) -> SportsEvent:
+def _parse_datetime_value(value: str, tz_name: str) -> datetime | None:
+    value = value.strip()
+    if not ISO_RE.match(value):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+    return dt
+
+
+def _extract_node_datetime(node: dict, meeting: dict) -> datetime | None:
     tz_name = meeting["timezone"]
-    local_dt = datetime(
-        meeting["year"],
-        meeting["month"],
-        meeting["day"],
-        hour,
-        minute,
-        tzinfo=ZoneInfo(tz_name),
-    )
+    date_value = None
+    time_value = None
+
+    for raw_key, value in node.items():
+        if not isinstance(value, str):
+            continue
+        k = _key(str(raw_key))
+        value = value.strip()
+
+        if k in TIME_KEYS:
+            dt = _parse_datetime_value(value, tz_name)
+            if dt:
+                return dt
+            if TIME_ONLY_RE.match(value):
+                time_value = value
+
+        if k in DATE_KEYS and DATE_RE.match(value):
+            date_value = value
+
+    if not time_value:
+        return None
+
+    if date_value:
+        try:
+            d = date.fromisoformat(date_value)
+        except ValueError:
+            return None
+    elif meeting["day"] == meeting["end_day"]:
+        d = date(meeting["year"], meeting["month"], meeting["day"])
+    else:
+        # A time without a date is ambiguous for a multi-day meeting.
+        return None
+
+    parts = [int(x) for x in time_value.split(":")]
+    while len(parts) < 3:
+        parts.append(0)
+    return datetime.combine(d, time(parts[0], parts[1], parts[2]), ZoneInfo(tz_name))
+
+
+def _walk_schedule(payload, meeting: dict) -> list[tuple[str, datetime]]:
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            name = _candidate_name(node)
+            dt = _extract_node_datetime(node, meeting)
+            if name and dt:
+                found.append((name, dt))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def _make_event(meeting: dict, name: str, local_dt: datetime, source_url: str) -> SportsEvent:
+    if local_dt.tzinfo is None:
+        local_dt = local_dt.replace(tzinfo=ZoneInfo(meeting["timezone"]))
     utc_dt = local_dt.astimezone(timezone.utc)
     city = meeting["city"]
+    clean_name = _norm(name)
+    source_id = (
+        f"{utc_dt.strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{_meeting_key(city).replace('/', '-')}-"
+        f"{re.sub(r'[^a-z0-9]+', '-', clean_name.lower()).strip('-')[:60]}"
+    )
 
     return SportsEvent(
         source="diamondleague",
-        source_id=f"{meeting['year']}-{meeting['month']:02d}{meeting['day']:02d}-{_meeting_key(city).replace('/', '-')}",
+        source_id=source_id,
         sport="athletics",
         competition="Wanda Diamond League",
-        name=f"Diamond League - {city}",
+        name=f"{clean_name} - {city}",
         start_datetime=utc_dt,
         end_datetime=None,
         location=city,
         country=meeting["country"],
         source_url=source_url,
         discovered_at=datetime.now(timezone.utc),
-        timezone=tz_name,
+        timezone=meeting["timezone"],
     )
 
 
@@ -187,6 +241,7 @@ class DiamondLeagueScraper(BaseScraper):
 
     def scrape(self) -> Iterable[SportsEvent]:
         events = []
+        today_utc = datetime.now(timezone.utc).date()
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -195,8 +250,7 @@ class DiamondLeagueScraper(BaseScraper):
 
             try:
                 page.goto(SOURCE_URL, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(1500)
-
+                page.wait_for_timeout(800)
                 body = page.locator("body").inner_text()
 
                 year_match = re.search(r"Calendar\s+(20\d{2})", body, re.IGNORECASE)
@@ -206,120 +260,106 @@ class DiamondLeagueScraper(BaseScraper):
                 year = int(year_match.group(1))
                 meetings = _extract_calendar(body, year)
 
-                print(f"[DL] calendar URL: {page.url}")
-                print(f"[DL] calendar year: {year}")
-                print(f"[DL] calendar body chars: {len(body)}")
-                print(f"[DL] meetings found: {len(meetings)}")
-                for meeting in meetings:
-                    print(
-                        f"[DL] meeting: {meeting['day']:02d}."
-                        f"{meeting['month']:02d}.{meeting['year']} | "
-                        f"{meeting['city']} | {meeting['timezone']}"
-                    )
+                # Only current/future meetings matter for TV matching. Keep a
+                # one-day grace window so a meeting running across midnight is
+                # not accidentally dropped.
+                meetings = [
+                    m for m in meetings
+                    if date(m["year"], m["month"], m["end_day"]) >= today_utc
+                ]
 
-                # Map city -> official meeting subdomain discovered from calendar.
                 links = page.locator("a").evaluate_all(
                     """els => els.map(a => ({
                         text: (a.innerText || '').trim(),
                         href: a.href
                     }))"""
                 )
-
                 city_urls = {}
                 for item in links:
                     href = item.get("href") or ""
                     host = urlparse(href).netloc.lower()
                     text = (item.get("text") or "").lower()
-
                     if not host.endswith(".diamondleague.com"):
                         continue
-
                     for meeting in meetings:
                         city_key = _meeting_key(meeting["city"])
-                        aliases = {
-                            city_key,
-                            city_key.split("/")[0],
-                        }
+                        aliases = {city_key, city_key.split("/")[0]}
                         if any(alias in text for alias in aliases if alias):
                             city_urls.setdefault(city_key, f"https://{host}/")
-
-                print(f"[DL] discovered meeting subdomains: {len(city_urls)}")
-                for key, value in sorted(city_urls.items()):
-                    print(f"[DL] subdomain: {key} -> {value}")
 
                 for meeting in meetings:
                     key = _meeting_key(meeting["city"])
                     base = city_urls.get(key)
                     if not base:
-                        # Most hosts follow city.diamondleague.com. Use only
-                        # safe known slugs when calendar link extraction misses.
                         slug = key.split("/")[0].replace(" ", "")
                         base = f"https://{slug}.diamondleague.com/"
-
                     programme_url = base.rstrip("/") + "/en/programme-results/"
-                    print(f"[DL] opening: {meeting['city']} -> {programme_url}")
 
-                    try:
-                        response = page.goto(
-                            programme_url,
-                            wait_until="domcontentloaded",
-                            timeout=45000,
-                        )
-                        page.wait_for_timeout(1200)
-                        status = response.status if response else "no-response"
-                        print(
-                            f"[DL] loaded: {meeting['city']} | "
-                            f"status={status} | final_url={page.url}"
-                        )
-                    except Exception as exc:
-                        print(f"[DL] navigation ERROR: {meeting['city']} | {exc}")
-                        continue
+                    payloads = []
+                    response_urls = []
 
-                    texts = []
-                    try:
-                        main_text = page.locator("body").inner_text()
-                        texts.append(main_text)
-                        print(
-                            f"[DL] main body: {meeting['city']} | "
-                            f"chars={len(main_text)} | frames={len(page.frames)}"
-                        )
-                        preview = _norm(main_text)[:350]
-                        print(f"[DL] body preview: {preview}")
-                    except Exception as exc:
-                        print(f"[DL] body ERROR: {meeting['city']} | {exc}")
-
-                    # Swiss Timing is commonly embedded as a cross-origin frame.
-                    for frame in page.frames:
-                        if frame == page.main_frame:
-                            continue
+                    def on_response(response):
+                        url = response.url
+                        if not _is_swiss_timing_url(url):
+                            return
+                        ctype = (response.headers.get("content-type") or "").lower()
+                        if "json" not in ctype:
+                            return
                         try:
-                            frame_text = frame.locator("body").inner_text(timeout=5000)
-                            texts.append(frame_text)
-                            print(
-                                f"[DL] frame: {meeting['city']} | "
-                                f"url={frame.url} | chars={len(frame_text)}"
-                            )
-                        except Exception as exc:
-                            print(
-                                f"[DL] frame ERROR: {meeting['city']} | "
-                                f"url={frame.url} | {exc}"
-                            )
+                            raw = response.body()
+                            if len(raw) > 3_000_000:
+                                return
+                            payload = json.loads(raw.decode("utf-8"))
+                        except Exception:
+                            return
+                        payloads.append(payload)
+                        response_urls.append(url)
+
+                    page.on("response", on_response)
+                    try:
+                        page.goto(programme_url, wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(2500)
+
+                        # If the embedded app has not requested its data yet,
+                        # navigate directly to the Swiss Timing iframe once.
+                        iframe_urls = page.locator("iframe").evaluate_all(
+                            "els => els.map(e => e.src).filter(Boolean)"
+                        )
+                        swiss_urls = [u for u in iframe_urls if _is_swiss_timing_url(u)]
+                        if swiss_urls and not payloads:
+                            page.goto(swiss_urls[0], wait_until="domcontentloaded", timeout=45000)
+                            page.wait_for_timeout(2500)
+                    except Exception as exc:
+                        print(f"diamondleague {meeting['city']}: load error: {exc}")
+                    finally:
+                        page.remove_listener("response", on_response)
+
+                    parsed = []
+                    for payload in payloads:
+                        parsed.extend(_walk_schedule(payload, meeting))
+
+                    seen = set()
+                    for name, local_dt in parsed:
+                        # Restrict accidental matches to the meeting's own date span.
+                        local_date = local_dt.astimezone(ZoneInfo(meeting["timezone"])).date()
+                        first = date(meeting["year"], meeting["month"], meeting["day"])
+                        last = date(meeting["year"], meeting["month"], meeting["end_day"])
+                        if not (first <= local_date <= last):
                             continue
+                        dedupe = (name.lower(), local_dt.isoformat())
+                        if dedupe in seen:
+                            continue
+                        seen.add(dedupe)
+                        events.append(_make_event(meeting, name, local_dt, programme_url))
 
-                    start = _extract_program_start(texts)
-                    print(f"[DL] parsed start: {meeting['city']} -> {start}")
-                    if start is None:
-                        # No published concrete timetable: valid empty state
-                        # for this meeting. Never invent a start time.
-                        continue
-
-                    event = _make_event(
-                        meeting,
-                        hour=start[0],
-                        minute=start[1],
-                        source_url=page.url,
-                    )
-                    events.append(event)
+                    if not parsed:
+                        print(
+                            f"diamondleague {meeting['city']}: no schedule parsed "
+                            f"from {len(payloads)} Swiss Timing JSON responses"
+                        )
+                        # Compact diagnostics: endpoint paths only, no payload dumps.
+                        for url in response_urls[:5]:
+                            print(f"  Swiss Timing JSON: {url}")
 
             finally:
                 context.close()
