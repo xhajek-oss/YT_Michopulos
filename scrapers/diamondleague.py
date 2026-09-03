@@ -206,6 +206,17 @@ class DiamondLeagueScraper(BaseScraper):
                 year = int(year_match.group(1))
                 meetings = _extract_calendar(body, year)
 
+                print(f"[DL] calendar URL: {page.url}")
+                print(f"[DL] calendar year: {year}")
+                print(f"[DL] calendar body chars: {len(body)}")
+                print(f"[DL] meetings found: {len(meetings)}")
+                for meeting in meetings:
+                    print(
+                        f"[DL] meeting: {meeting['day']:02d}."
+                        f"{meeting['month']:02d}.{meeting['year']} | "
+                        f"{meeting['city']} | {meeting['timezone']}"
+                    )
+
                 # Map city -> official meeting subdomain discovered from calendar.
                 links = page.locator("a").evaluate_all(
                     """els => els.map(a => ({
@@ -232,6 +243,10 @@ class DiamondLeagueScraper(BaseScraper):
                         if any(alias in text for alias in aliases if alias):
                             city_urls.setdefault(city_key, f"https://{host}/")
 
+                print(f"[DL] discovered meeting subdomains: {len(city_urls)}")
+                for key, value in sorted(city_urls.items()):
+                    print(f"[DL] subdomain: {key} -> {value}")
+
                 for meeting in meetings:
                     key = _meeting_key(meeting["city"])
                     base = city_urls.get(key)
@@ -242,34 +257,57 @@ class DiamondLeagueScraper(BaseScraper):
                         base = f"https://{slug}.diamondleague.com/"
 
                     programme_url = base.rstrip("/") + "/en/programme-results/"
+                    print(f"[DL] opening: {meeting['city']} -> {programme_url}")
 
                     try:
-                        page.goto(
+                        response = page.goto(
                             programme_url,
                             wait_until="domcontentloaded",
                             timeout=45000,
                         )
                         page.wait_for_timeout(1200)
-                    except Exception:
-                        # One unavailable meeting must not stop the season.
+                        status = response.status if response else "no-response"
+                        print(
+                            f"[DL] loaded: {meeting['city']} | "
+                            f"status={status} | final_url={page.url}"
+                        )
+                    except Exception as exc:
+                        print(f"[DL] navigation ERROR: {meeting['city']} | {exc}")
                         continue
 
                     texts = []
                     try:
-                        texts.append(page.locator("body").inner_text())
-                    except Exception:
-                        pass
+                        main_text = page.locator("body").inner_text()
+                        texts.append(main_text)
+                        print(
+                            f"[DL] main body: {meeting['city']} | "
+                            f"chars={len(main_text)} | frames={len(page.frames)}"
+                        )
+                        preview = _norm(main_text)[:350]
+                        print(f"[DL] body preview: {preview}")
+                    except Exception as exc:
+                        print(f"[DL] body ERROR: {meeting['city']} | {exc}")
 
                     # Swiss Timing is commonly embedded as a cross-origin frame.
                     for frame in page.frames:
                         if frame == page.main_frame:
                             continue
                         try:
-                            texts.append(frame.locator("body").inner_text(timeout=5000))
-                        except Exception:
+                            frame_text = frame.locator("body").inner_text(timeout=5000)
+                            texts.append(frame_text)
+                            print(
+                                f"[DL] frame: {meeting['city']} | "
+                                f"url={frame.url} | chars={len(frame_text)}"
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[DL] frame ERROR: {meeting['city']} | "
+                                f"url={frame.url} | {exc}"
+                            )
                             continue
 
                     start = _extract_program_start(texts)
+                    print(f"[DL] parsed start: {meeting['city']} -> {start}")
                     if start is None:
                         # No published concrete timetable: valid empty state
                         # for this meeting. Never invent a start time.
