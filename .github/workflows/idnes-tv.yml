@@ -1,0 +1,46 @@
+name: iDNES TV Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tv-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run focused TV tests
+        run: |
+          pytest -q \
+            tests/test_idnes.py \
+            tests/test_idnes_cleanup.py \
+            tests/test_tv_storage.py \
+            tests/test_tv_matcher.py \
+            tests/test_tv_matcher_db_path.py
+
+      - name: Run sports scraper
+        run: python main.py
+
+      - name: Run iDNES TV scraper
+        run: python tv_main.py
+
+      - name: Run TV matcher
+        run: python match_tv.py
+
+      - name: Upload SQLite database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-events-db
+          path: data/sports_events.db
+          if-no-files-found: warn

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 PRAGUE = ZoneInfo("Europe/Prague")
 UTC = timezone.utc
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -229,8 +230,12 @@ def score_pair(event: sqlite3.Row, tv: sqlite3.Row) -> MatchCandidate:
 
 
 class TVMatcher:
-    def __init__(self, db_path: str | Path = "data/sports_events.db") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self.db_path = (
+            PROJECT_ROOT / "data" / "sports_events.db"
+            if db_path is None
+            else Path(db_path).expanduser().resolve()
+        )
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.exists():
@@ -279,6 +284,42 @@ class TVMatcher:
 
         results.sort(key=lambda x: (-x.score, x.sports_event_id, x.tv_program_id))
         return results
+
+    def candidate_details(
+        self, candidates: Iterable[MatchCandidate]
+    ) -> list[tuple[MatchCandidate, sqlite3.Row, sqlite3.Row]]:
+        items = list(candidates)
+        if not items:
+            return []
+
+        event_ids = sorted({item.sports_event_id for item in items})
+        tv_ids = sorted({item.tv_program_id for item in items})
+        event_placeholders = ",".join("?" for _ in event_ids)
+        tv_placeholders = ",".join("?" for _ in tv_ids)
+
+        with self._connect() as conn:
+            events = {
+                row["id"]: row
+                for row in conn.execute(
+                    f"SELECT * FROM sports_events WHERE id IN ({event_placeholders})",
+                    event_ids,
+                )
+            }
+            tv_rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    f"SELECT * FROM tv_programs WHERE id IN ({tv_placeholders})",
+                    tv_ids,
+                )
+            }
+
+        details = []
+        for item in items:
+            event = events.get(item.sports_event_id)
+            tv = tv_rows.get(item.tv_program_id)
+            if event is not None and tv is not None:
+                details.append((item, event, tv))
+        return details
 
     def best_matches(self, *, min_score: int = 50) -> list[MatchCandidate]:
         best: dict[int, MatchCandidate] = {}
