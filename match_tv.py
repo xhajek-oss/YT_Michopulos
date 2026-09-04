@@ -6,6 +6,7 @@ def main() -> None:
     matches = matcher.find_candidates(min_score=50)
     print(f"[MATCH] candidates={len(matches)}")
 
+    # Intentionally verbose: this output is used to review sport-to-TV matches in CI.
     for item, event, tv in matcher.candidate_details(matches):
         print(
             f"[MATCH] score={item.score} status={item.status} "
