@@ -2,6 +2,21 @@ name: iDNES TV Pipeline
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scrapers/idnes.py"
+      - "matching/**"
+      - "match_tv.py"
+      - "tv_main.py"
+      - "storage/sqlite.py"
+      - "models/tv_program.py"
+      - "config/tv_channels.yaml"
+      - "requirements.txt"
+      - "tests/test_idnes*.py"
+      - "tests/test_tv*.py"
+      - ".github/workflows/idnes-tv.yml"
 
 jobs:
   tv-pipeline:
