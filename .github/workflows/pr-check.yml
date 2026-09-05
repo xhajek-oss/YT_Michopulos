@@ -1,0 +1,14 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  pr-check:
+    uses: ./.github/workflows/_pipeline.yml
+    with:
+      mode: pr
+      source: all
+    secrets: inherit

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 PRAGUE = ZoneInfo("Europe/Prague")
 UTC = timezone.utc
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,33 @@ def _round(text: str) -> Optional[str]:
     return None
 
 
+def _hockey_team(value: str) -> str:
+    """Normalize a team name while retaining its identifying words."""
+    team = _norm(value)
+    words = team.split()
+    while words and words[0] in {"elh", "hokej", "extraliga"}:
+        words.pop(0)
+    if words and words[0] in {"hc", "bk"}:
+        words.pop(0)
+    if words and words[-1] == "hk":
+        words.pop()
+    return " ".join(words)
+
+
+def _hockey_matchup(value: Optional[str]) -> Optional[frozenset[str]]:
+    """Return two normalized teams for titles shaped like 'Team A - Team B'."""
+    if not value:
+        return None
+    clean = value.replace("–", "-").replace("—", "-")
+    match = re.search(r"(?:^|:\s*)(.+?)\s+-\s+(.+?)(?:\s*\([^)]*\))?$", clean)
+    if not match:
+        return None
+    teams = frozenset(_hockey_team(part) for part in match.groups())
+    if len(teams) != 2 or "" in teams:
+        return None
+    return teams
+
+
 def _event_text(row: sqlite3.Row) -> str:
     return _norm(" ".join(str(row[k] or "") for k in ("sport", "competition", "name", "location", "country")))
 
@@ -149,6 +177,20 @@ def score_pair(event: sqlite3.Row, tv: sqlite3.Row) -> MatchCandidate:
         reasons.append(f"sport:{e_sport}")
     elif t_sport and e_sport != t_sport:
         return MatchCandidate(event["id"], tv["id"], 0, "no_match", ("sport_conflict",))
+
+    # A specific hockey broadcast must name the same two teams as the event.
+    # Broad studio/magazine programmes have no matchup, so they remain eligible
+    # for the existing time/sport scoring as "possible" candidates.
+    if e_sport == "hockey" and t_sport == "hockey":
+        event_matchup = _hockey_matchup(event["name"])
+        tv_matchup = _hockey_matchup(tv["title"])
+        if event_matchup and tv_matchup:
+            if event_matchup != tv_matchup:
+                return MatchCandidate(
+                    event["id"], tv["id"], 0, "no_match", ("team_conflict",)
+                )
+            score += 15
+            reasons.append("team_matchup")
 
     # TV blocks often cover several individual events. If end is missing,
     # allow a conservative 3-hour window for broad sports programming.
@@ -229,8 +271,12 @@ def score_pair(event: sqlite3.Row, tv: sqlite3.Row) -> MatchCandidate:
 
 
 class TVMatcher:
-    def __init__(self, db_path: str | Path = "data/sports_events.db") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self.db_path = (
+            PROJECT_ROOT / "data" / "sports_events.db"
+            if db_path is None
+            else Path(db_path).expanduser().resolve()
+        )
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.exists():
@@ -279,6 +325,42 @@ class TVMatcher:
 
         results.sort(key=lambda x: (-x.score, x.sports_event_id, x.tv_program_id))
         return results
+
+    def candidate_details(
+        self, candidates: Iterable[MatchCandidate]
+    ) -> list[tuple[MatchCandidate, sqlite3.Row, sqlite3.Row]]:
+        items = list(candidates)
+        if not items:
+            return []
+
+        event_ids = sorted({item.sports_event_id for item in items})
+        tv_ids = sorted({item.tv_program_id for item in items})
+        event_placeholders = ",".join("?" for _ in event_ids)
+        tv_placeholders = ",".join("?" for _ in tv_ids)
+
+        with self._connect() as conn:
+            events = {
+                row["id"]: row
+                for row in conn.execute(
+                    f"SELECT * FROM sports_events WHERE id IN ({event_placeholders})",
+                    event_ids,
+                )
+            }
+            tv_rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    f"SELECT * FROM tv_programs WHERE id IN ({tv_placeholders})",
+                    tv_ids,
+                )
+            }
+
+        details = []
+        for item in items:
+            event = events.get(item.sports_event_id)
+            tv = tv_rows.get(item.tv_program_id)
+            if event is not None and tv is not None:
+                details.append((item, event, tv))
+        return details
 
     def best_matches(self, *, min_score: int = 50) -> list[MatchCandidate]:
         best: dict[int, MatchCandidate] = {}

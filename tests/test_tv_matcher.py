@@ -64,3 +64,53 @@ def test_far_time_is_rejected():
     tv = row(id=2, start_datetime="2026-09-13T12:00:00+00:00")
     result = score_pair(event, tv)
     assert result.status == "no_match"
+
+
+def test_specific_hockey_broadcast_with_wrong_teams_is_rejected():
+    event = row(
+        sport="hockey",
+        competition="ELH",
+        name="HC Dynamo Pardubice - Mountfield HK",
+        location="Pardubice",
+        country="Czechia",
+        start_datetime="2026-09-16T16:00:00+00:00",
+    )
+    tv = row(
+        id=2,
+        sport="hockey",
+        competition="ELH",
+        name="unused",
+        channel="Oneplay Sport 3",
+        title="ELH: HC Olomouc - HC Sparta Praha",
+        description="Hokej",
+        start_datetime="2026-09-16T15:50:00+00:00",
+    )
+    result = score_pair(event, tv)
+    assert result.score == 0
+    assert result.status == "no_match"
+    assert result.reasons == ("team_conflict",)
+
+
+def test_specific_hockey_broadcast_with_same_teams_matches_even_reversed():
+    event = row(
+        sport="hockey",
+        competition="ELH",
+        name="HC Dynamo Pardubice - Mountfield HK",
+        location="Pardubice",
+        country="Czechia",
+        start_datetime="2026-09-16T16:00:00+00:00",
+    )
+    tv = row(
+        id=2,
+        sport="hockey",
+        competition="ELH",
+        name="unused",
+        channel="Oneplay Sport 2",
+        title="ELH: Mountfield HK - HC Dynamo Pardubice",
+        description="Hokej",
+        start_datetime="2026-09-16T15:50:00+00:00",
+    )
+    result = score_pair(event, tv)
+    assert result.status == "match"
+    assert result.score >= 70
+    assert "team_matchup" in result.reasons
